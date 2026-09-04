@@ -1,11 +1,12 @@
-mux.HandleFunc("GET /test/{id}/{username}", func(w http.ResponseWriter, r *http.Request) {
+=== EXEMPLE ROUTE POST ===
+mux.HandleFunc("POST /test/create", func(w http.ResponseWriter, r *http.Request) {
 	db := config.ConnectDB()
 	defer db.Close()
 
-	// Lecture des paramètres d'URL
+	// Reading path parameters if present
 	id := r.PathValue("id")
 
-	type returnType struct {
+	type inputType struct {
 		Id int `json:"id"`
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -13,17 +14,23 @@ mux.HandleFunc("GET /test/{id}/{username}", func(w http.ResponseWriter, r *http.
 		Role string `json:"role"`
 	}
 
-	var returnValue returnType
-	query := "select id, username, password, email, role from User_table where id = $1"
-	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Username, &returnValue.Password, &returnValue.Email, &returnValue.Role)
+	var inputData inputType
+	if err := json.NewDecoder(r.Body).Decode(&inputData); err != nil {
+		http.Error(w, "données invalides", http.StatusBadRequest)
+		return
+	}
+
+	query := "insert into User_table (username, password, email, role) values ($1, $2, $3, $4) returning id"
+	var newID int
+	err := db.QueryRow(query, inputData.Username, inputData.Password, inputData.Email, inputData.Role).Scan(&newID)
 	if err != nil {
-		http.Error(w, "model introuvable", http.StatusNotFound)
+		http.Error(w, "erreur lors de la création", http.StatusInternalServerError)
 		return
 	}
 
 	renderTemplate(w, ".html", map[string]interface{}{
-		"User_table": returnValue,
-		"Id": id,
+		"Id": newID,
+		"Message": "Création réussie",
 	})
 })
 
