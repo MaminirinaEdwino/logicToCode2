@@ -1,22 +1,29 @@
-package generated
+mux.HandleFunc("GET /test/{id}/{username}", func(w http.ResponseWriter, r *http.Request) {
+	db := config.ConnectDB()
+	defer db.Close()
 
-import (
-	"context"
-	"fmt"
-)
+	// Lecture des paramètres d'URL
+	id := r.PathValue("id")
 
-// ExecutionPipeline est généré automatiquement depuis le graphe
-func ExecutionPipeline(ctx context.Context) error {
-	// Statut HTTP configuré
-	fmt.Println("Réponse envoyée avec succès", results)
-	// --- Début du pipeline (rootNode_6pdmo) ---
-	// Modèle cible: voiture
-	query := db.Model(&SelectNode{}).Select("*")
-	query = query.Where("1 = 1")
-	var results []interface{}
-	if err := query.Find(&results).Error; err != nil {
-		return fmt.Errorf("échec de la requête: %w", err)
+	type returnType struct {
+		Id int `json:"id"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Email string `json:"email"`
+		Role string `json:"role"`
 	}
-	fmt.Println("Réponse envoyée avec succès", results)
-	return nil
-}
+
+	var returnValue returnType
+	query := "select id, username, password, email, role from User_table where id = $1"
+	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Username, &returnValue.Password, &returnValue.Email, &returnValue.Role)
+	if err != nil {
+		http.Error(w, "model introuvable", http.StatusNotFound)
+		return
+	}
+
+	renderTemplate(w, ".html", map[string]interface{}{
+		"User_table": returnValue,
+		"Id": id,
+	})
+})
+
