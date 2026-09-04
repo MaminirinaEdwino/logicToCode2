@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// --- 1. Structure de l'Arbre Dynamique ---
+// --- 1. Structure de l'Arbre TurboStack ---
 
 type DynamicNode struct {
 	ID       string         `json:"id"`
@@ -17,9 +17,9 @@ type DynamicNode struct {
 	Children []*DynamicNode `json:"children"`
 }
 
-// --- 2. Algorithme de Reconstruction de l'Arbre ---
+// --- 2. Construction du Graphe TurboStack ---
 
-func BuildDynamicHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*DynamicNode, error) {
+func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*DynamicNode, error) {
 	var rawNodes []map[string]any
 	if err := json.Unmarshal([]byte(nodesRawJSON), &rawNodes); err != nil {
 		return nil, fmt.Errorf("erreur unmarshal nodes: %w", err)
@@ -32,13 +32,13 @@ func BuildDynamicHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dynamic
 	}
 	var edges []Edge
 	if err := json.Unmarshal([]byte(edgesRawJSON), &edges); err != nil {
-		return nil, fmt.Errorf("erreur unmarshal edges: %w", err)
+		// Tolérance si edges est vide ("[]")
+		edges = []Edge{}
 	}
 
 	nodeMap := make(map[string]*DynamicNode)
 	inDegree := make(map[string]int)
 
-	// Étape A: Instanciation dynamique de chaque nœud
 	for _, n := range rawNodes {
 		id, _ := n["id"].(string)
 		nodeType, _ := n["type"].(string)
@@ -58,7 +58,6 @@ func BuildDynamicHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dynamic
 		inDegree[id] = 0
 	}
 
-	// Étape B: Liaison des enfants
 	for _, edge := range edges {
 		parent, parentOk := nodeMap[edge.Source]
 		child, childOk := nodeMap[edge.Target]
@@ -69,7 +68,6 @@ func BuildDynamicHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dynamic
 		}
 	}
 
-	// Étape C: Extraction des racines
 	var roots []*DynamicNode
 	for id, count := range inDegree {
 		if count == 0 {
@@ -80,41 +78,37 @@ func BuildDynamicHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dynamic
 	return roots, nil
 }
 
-// --- 3. Générateur de Code Routeur & Handler net/http ---
+// --- 3. Générateur de Code Native HTTP pour TurboStack ---
 
-type NativeHTTPGenerator struct {
+type TurboStackGenerator struct {
 	builder strings.Builder
 	indent  int
 }
 
-func (g *NativeHTTPGenerator) writeIndent() {
+func (g *TurboStackGenerator) writeIndent() {
 	for i := 0; i < g.indent; i++ {
 		g.builder.WriteString("\t")
 	}
 }
 
-func (g *NativeHTTPGenerator) GenerateRoute(routePattern string, roots []*DynamicNode) string {
+func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*DynamicNode) string {
 	g.builder.Reset()
 	g.indent = 0
 
-	// Extraction de la méthode HTTP depuis le routePattern (ex: "POST /users" -> "POST")
 	method := "GET"
 	parts := strings.Split(routePattern, " ")
 	if len(parts) > 1 {
 		method = strings.ToUpper(parts[0])
 	}
 
-	// Déclaration de la route
 	g.builder.WriteString(fmt.Sprintf("mux.HandleFunc(%q, func(w http.ResponseWriter, r *http.Request) {\n", routePattern))
 	g.indent++
 
-	// Connexion à la BDD
 	g.writeIndent()
 	g.builder.WriteString("db := config.ConnectDB()\n")
 	g.writeIndent()
 	g.builder.WriteString("defer db.Close()\n\n")
 
-	// Parcours récursif
 	for _, root := range roots {
 		g.traverseAndGenerate(root, method)
 	}
@@ -126,30 +120,63 @@ func (g *NativeHTTPGenerator) GenerateRoute(routePattern string, roots []*Dynami
 	return g.builder.String()
 }
 
-func (g *NativeHTTPGenerator) traverseAndGenerate(node *DynamicNode, httpMethod string) {
+func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, httpMethod string) {
 	switch node.Type {
+
 	case "rootNode":
 		g.writeIndent()
-		g.builder.WriteString("// Reading path parameters if present\n")
+		g.builder.WriteString("// Variables d'URL (Path Values)\n")
 		g.writeIndent()
 		g.builder.WriteString("id := r.PathValue(\"id\")\n\n")
 
-	case "modelNode":
-		modelName := "User_table"
-		if m, ok := node.Data["model"].(map[string]any); ok {
-			if nom, ok := m["nom"].(string); ok {
-				modelName = nom
+	case "varNode":
+		varName, _ := node.Data["name"].(string)
+		varType, _ := node.Data["type"].(string)
+		defaultVal, _ := node.Data["default value"].(string)
+
+		if varName != "" {
+			goType := "string"
+			if varType == "int" {
+				goType = "int"
+			} else if varType == "bool" {
+				goType = "bool"
+			}
+
+			g.writeIndent()
+			if defaultVal != "" {
+				g.builder.WriteString(fmt.Sprintf("var %s %s = %q\n", varName, goType, defaultVal))
+			} else {
+				g.builder.WriteString(fmt.Sprintf("var %s %s\n", varName, goType))
 			}
 		}
 
-		// Inspection des champs du modèle
+	case "bodyParamsNode":
+		// Extraction des paramètres du body
+		if bodyData, ok := node.Data["bodyParams"].(map[string]any); ok {
+			if field, ok := bodyData["field"].(map[string]any); ok {
+				fNom, _ := field["nom"].(string)
+				fType, _ := field["type"].(string)
+				
+				goType := "string"
+				if fType == "int" {
+					goType = "int"
+				}
+
+				g.writeIndent()
+				g.builder.WriteString(fmt.Sprintf("// Paramètre du body : %s (%s)\n", fNom, goType))
+			}
+		}
+
+	case "modelNode":
+		modelTableName := "User_table"
 		var fields []string
-		var nonPrimaryFields []string
 		var structFields []string
 		var scanPointers []string
-		var valuePointers []string
 
 		if m, ok := node.Data["model"].(map[string]any); ok {
+			if nom, ok := m["nom"].(string); ok {
+				modelTableName = nom
+			}
 			if champs, ok := m["champs"].([]any); ok {
 				for _, c := range champs {
 					if champMap, ok := c.(map[string]any); ok {
@@ -163,11 +190,6 @@ func (g *NativeHTTPGenerator) traverseAndGenerate(node *DynamicNode, httpMethod 
 
 						capitalizedNom := capitalize(fNom)
 						fields = append(fields, fNom)
-						if fNom != "id" {
-							nonPrimaryFields = append(nonPrimaryFields, fNom)
-							valuePointers = append(valuePointers, fmt.Sprintf("inputData.%s", capitalizedNom))
-						}
-
 						structFields = append(structFields, fmt.Sprintf("%s %s `json:%q`", capitalizedNom, goType, fNom))
 						scanPointers = append(scanPointers, fmt.Sprintf("&returnValue.%s", capitalizedNom))
 					}
@@ -175,193 +197,101 @@ func (g *NativeHTTPGenerator) traverseAndGenerate(node *DynamicNode, httpMethod 
 			}
 		}
 
-		// Traitement selon la méthode HTTP (POST, PUT, DELETE, GET)
-		switch httpMethod {
-		case "POST":
-			// Lecture du Body JSON
-			g.writeIndent()
-			g.builder.WriteString("type inputType struct {\n")
-			g.indent++
-			for _, sf := range structFields {
-				g.writeIndent()
-				g.builder.WriteString(sf + "\n")
+		if len(fields) == 0 {
+			fields = []string{"id", "username", "password", "email", "role"}
+			structFields = []string{
+				"Id int `json:\"id\"`",
+				"Username string `json:\"username\"`",
+				"Password string `json:\"password\"`",
+				"Email string `json:\"email\"`",
+				"Role string `json:\"role\"`",
 			}
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-			g.writeIndent()
-			g.builder.WriteString("var inputData inputType\n")
-			g.writeIndent()
-			g.builder.WriteString("if err := json.NewDecoder(r.Body).Decode(&inputData); err != nil {\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("http.Error(w, \"données invalides\", http.StatusBadRequest)\n")
-			g.writeIndent()
-			g.builder.WriteString("return\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-			// Construction de la requête INSERT SQL
-			placeholders := make([]string, len(nonPrimaryFields))
-			for i := range nonPrimaryFields {
-				placeholders[i] = fmt.Sprintf("$%d", i+1)
-			}
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"insert into %s (%s) values (%s) returning id\"\n",
-				modelName, strings.Join(nonPrimaryFields, ", "), strings.Join(placeholders, ", ")))
-			g.writeIndent()
-			g.builder.WriteString("var newID int\n")
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, %s).Scan(&newID)\n", strings.Join(valuePointers, ", ")))
-			g.writeIndent()
-			g.builder.WriteString("if err != nil {\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("http.Error(w, \"erreur lors de la création\", http.StatusInternalServerError)\n")
-			g.writeIndent()
-			g.builder.WriteString("return\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-		case "PUT":
-			// Lecture du Body JSON
-			g.writeIndent()
-			g.builder.WriteString("type inputType struct {\n")
-			g.indent++
-			for _, sf := range structFields {
-				g.writeIndent()
-				g.builder.WriteString(sf + "\n")
-			}
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-			g.writeIndent()
-			g.builder.WriteString("var inputData inputType\n")
-			g.writeIndent()
-			g.builder.WriteString("if err := json.NewDecoder(r.Body).Decode(&inputData); err != nil {\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("http.Error(w, \"données invalides\", http.StatusBadRequest)\n")
-			g.writeIndent()
-			g.builder.WriteString("return\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-			// Construction UPDATE SQL
-			setClauses := make([]string, len(nonPrimaryFields))
-			for i, field := range nonPrimaryFields {
-				setClauses[i] = fmt.Sprintf("%s = $%d", field, i+1)
-			}
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"update %s set %s where id = $%d\"\n",
-				modelName, strings.Join(setClauses, ", "), len(nonPrimaryFields)+1))
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("_, err := db.Exec(query, %s, id)\n", strings.Join(append(valuePointers, "id"), ", ")))
-			g.writeIndent()
-			g.builder.WriteString("if err != nil {\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("http.Error(w, \"erreur lors de la mise à jour\", http.StatusInternalServerError)\n")
-			g.writeIndent()
-			g.builder.WriteString("return\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-		case "DELETE":
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"delete from %s where id = $1\"\n", modelName))
-			g.writeIndent()
-			g.builder.WriteString("_, err := db.Exec(query, id)\n")
-			g.writeIndent()
-			g.builder.WriteString("if err != nil {\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("http.Error(w, \"erreur lors de la suppression\", http.StatusInternalServerError)\n")
-			g.writeIndent()
-			g.builder.WriteString("return\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-		default: // GET
-			g.writeIndent()
-			g.builder.WriteString("type returnType struct {\n")
-			g.indent++
-			for _, sf := range structFields {
-				g.writeIndent()
-				g.builder.WriteString(sf + "\n")
-			}
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-			g.writeIndent()
-			g.builder.WriteString("var returnValue returnType\n")
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"select %s from %s where id = $1\"\n", strings.Join(fields, ", "), modelName))
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, id).Scan(%s)\n", strings.Join(scanPointers, ", ")))
-			g.writeIndent()
-			g.builder.WriteString("if err != nil {\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("http.Error(w, \"model introuvable\", http.StatusNotFound)\n")
-			g.writeIndent()
-			g.builder.WriteString("return\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
+			scanPointers = []string{"&returnValue.Id", "&returnValue.Username", "&returnValue.Password", "&returnValue.Email", "&returnValue.Role"}
 		}
+
+		g.writeIndent()
+		g.builder.WriteString("type returnType struct {\n")
+		g.indent++
+		for _, sf := range structFields {
+			g.writeIndent()
+			g.builder.WriteString(sf + "\n")
+		}
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+		g.writeIndent()
+		g.builder.WriteString("var returnValue returnType\n")
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("query := \"select %s from %s where id = $1\"\n", strings.Join(fields, ", "), modelTableName))
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, id).Scan(%s)\n", strings.Join(scanPointers, ", ")))
+		g.writeIndent()
+		g.builder.WriteString("if err != nil {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("http.Error(w, \"model introuvable\", http.StatusNotFound)\n")
+		g.writeIndent()
+		g.builder.WriteString("return\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+	case "tryCatchNode":
+		g.writeIndent()
+		g.builder.WriteString("// --- Bloc Try / Catch ---\n")
+
+	case "ifElseNode":
+		g.writeIndent()
+		g.builder.WriteString("if true {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("// Logique IF\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("} else {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("// Logique ELSE\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+	case "forNode":
+		g.writeIndent()
+		g.builder.WriteString("for i := 0; i < 10; i++ {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("// Logique Boucle FOR\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+	case "whileNode":
+		g.writeIndent()
+		g.builder.WriteString("for true {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("// Logique Boucle WHILE\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+	case "statusCodeNode":
+		g.writeIndent()
+		g.builder.WriteString("w.WriteHeader(http.StatusOK)\n")
 
 	case "responseNode":
-		modelName := "User_table"
-		if parentModel, ok := node.Data["model_name"].(string); ok {
-			modelName = parentModel
-		}
-
-		switch httpMethod {
-		case "POST":
-			g.writeIndent()
-			g.builder.WriteString("renderTemplate(w, \".html\", map[string]interface{}{\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("\"Id\": newID,\n")
-			g.writeIndent()
-			g.builder.WriteString("\"Message\": \"Création réussie\",\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("})\n")
-
-		case "PUT", "DELETE":
-			g.writeIndent()
-			g.builder.WriteString("renderTemplate(w, \".html\", map[string]interface{}{\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString("\"Id\": id,\n")
-			g.writeIndent()
-			g.builder.WriteString("\"Message\": \"Opération effectuée avec succès\",\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("})\n")
-
-		default: // GET
-			g.writeIndent()
-			g.builder.WriteString("renderTemplate(w, \".html\", map[string]interface{}{\n")
-			g.indent++
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("%q: returnValue,\n", modelName))
-			g.writeIndent()
-			g.builder.WriteString("\"Id\": id,\n")
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("})\n")
-		}
+		g.writeIndent()
+		g.builder.WriteString("renderTemplate(w, \".html\", map[string]interface{}{\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("\"User_table\": returnValue,\n")
+		g.writeIndent()
+		g.builder.WriteString("\"Id\": id,\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("})\n")
 	}
 
 	for _, child := range node.Children {
@@ -376,27 +306,19 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// --- Exemple de test avec POST ---
+// --- Execution sur le Payload TurboStack ---
 
 func main() {
-	nodesJSON := `[
-		{"id":"rootNode_6pdmo","type":"rootNode","data":{"name":"rootNode"}},
-		{"id":"modelNode_9tfo7","type":"modelNode","data":{"name":"voiture","model":{"nom":"User_table","champs":[{"nom":"id","type":"int"},{"nom":"username","type":"string"},{"nom":"password","type":"string"},{"nom":"email","type":"string"},{"nom":"role","type":"string"}]}}},
-		{"id":"responseNode_fkvv7","type":"responseNode","data":{"model_name":"User_table"}}
-	]`
-	edgesJSON := `[
-		{"source":"rootNode_6pdmo","target":"modelNode_9tfo7"},
-		{"source":"modelNode_9tfo7","target":"responseNode_fkvv7"}
-	]`
+	nodesJSON := `[{"id":"rootNode_876l1","type":"rootNode","position":{"x":-31.491111059891935,"y":127.3580575263534},"data":{"name":"rootNode"},"measured":{"width":30,"height":30},"selected":false,"dragging":false},{"id":"response_m1ojy","type":"statusCodeNode","position":{"x":33.221181086669404,"y":149.42649574619543},"data":{"response":[]},"measured":{"width":210,"height":89},"selected":false,"dragging":false},{"id":"tryCatchNode_aermh","type":"tryCatchNode","position":{"x":313.10074587669027,"y":184.3681895942786},"data":{},"measured":{"width":160,"height":113},"selected":false,"dragging":false},{"id":"whileNode_o6wku","type":"whileNode","position":{"x":375.97400150493144,"y":320.45689194997095},"data":{},"measured":{"width":160,"height":177},"selected":false,"dragging":false},{"id":"forNode_qqsbt","type":"forNode","position":{"x":40.69585091685644,"y":290.1127893976882},"data":{},"measured":{"width":160,"height":267},"selected":false,"dragging":false},{"id":"ifElseNode_ccgp5","type":"ifElseNode","position":{"x":523.7889509812558,"y":154.94360530115588},"data":{},"measured":{"width":160,"height":209},"selected":false,"dragging":false},{"id":"var_y7mti","type":"varNode","position":{"x":335.97973586414963,"y":-69.41884993390447},"data":{"name":"userId","params":"","type":"string","default value":""},"measured":{"width":236,"height":179},"selected":false,"dragging":false},{"id":"responseNode_7pebr","type":"responseNode","position":{"x":65.06786341728053,"y":-1.3744987560582835},"data":{"response":[]},"measured":{"width":160,"height":83},"selected":false,"dragging":false},{"id":"modelNode_2mdlx","type":"modelNode","position":{"x":591.0323076568483,"y":-27.121010012540637},"data":{"name":"voiture","model":{"nom":"voiture","champs":[{"nom":"id","type":"int","default_value":"autoincrement","constraint":["primary key","autoincrement"]},{"nom":"mark","type":"string","default_value":"","constraint":[]},{"nom":"number","type":"string","default_value":"","constraint":["unique"]}]}},"measured":{"width":160,"height":167},"selected":true,"dragging":false},{"id":"bodyParams_bib63","type":"bodyParamsNode","position":{"x":-254.57847676507302,"y":30.80864031454462},"data":{"bodyParams":{"field":{"nom":"mark","type":"string","default_value":"","constraint":[]}}},"measured":{"width":222,"height":88},"selected":false,"dragging":false},{"id":"bodyParams_8caqi","type":"bodyParamsNode","position":{"x":-227.5664332440751,"y":221.14891996068195},"data":{"bodyParams":{"field":{"nom":"number","type":"string","default_value":"","constraint":["unique"]}}},"measured":{"width":222,"height":88},"selected":false,"dragging":false}]`
+	edgesJSON := `[]`
 
-	roots, err := BuildDynamicHierarchy(nodesJSON, edgesJSON)
+	roots, err := BuildTurboStackHierarchy(nodesJSON, edgesJSON)
 	if err != nil {
 		log.Fatalf("Erreur: %v", err)
 	}
 
-	gen := &NativeHTTPGenerator{}
+	gen := &TurboStackGenerator{}
+	code := gen.GenerateRoute("GET /test/{id}/{username}", roots)
 
-	fmt.Println("=== EXEMPLE ROUTE POST ===")
-	codePost := gen.GenerateRoute("POST /test/create", roots)
-	fmt.Println(codePost)
+	fmt.Println(code)
 }

@@ -1,36 +1,46 @@
-=== EXEMPLE ROUTE POST ===
-mux.HandleFunc("POST /test/create", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("GET /test/{id}/{username}", func(w http.ResponseWriter, r *http.Request) {
 	db := config.ConnectDB()
 	defer db.Close()
 
-	// Reading path parameters if present
+	type returnType struct {
+		Id int `json:"id"`
+		Mark string `json:"mark"`
+		Number string `json:"number"`
+	}
+
+	var returnValue returnType
+	query := "select id, mark, number from voiture where id = $1"
+	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Mark, &returnValue.Number)
+	if err != nil {
+		http.Error(w, "model introuvable", http.StatusNotFound)
+		return
+	}
+
+	for true {
+		// Logique Boucle WHILE
+	}
+
+	// Paramètre du body : mark (string)
+	// Paramètre du body : number (string)
+	// Variables d'URL (Path Values)
 	id := r.PathValue("id")
 
-	type inputType struct {
-		Id int `json:"id"`
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Email string `json:"email"`
-		Role string `json:"role"`
+	w.WriteHeader(http.StatusOK)
+	// --- Bloc Try / Catch ---
+	for i := 0; i < 10; i++ {
+		// Logique Boucle FOR
 	}
 
-	var inputData inputType
-	if err := json.NewDecoder(r.Body).Decode(&inputData); err != nil {
-		http.Error(w, "données invalides", http.StatusBadRequest)
-		return
+	if true {
+		// Logique IF
+	} else {
+		// Logique ELSE
 	}
 
-	query := "insert into User_table (username, password, email, role) values ($1, $2, $3, $4) returning id"
-	var newID int
-	err := db.QueryRow(query, inputData.Username, inputData.Password, inputData.Email, inputData.Role).Scan(&newID)
-	if err != nil {
-		http.Error(w, "erreur lors de la création", http.StatusInternalServerError)
-		return
-	}
-
+	var userId string
 	renderTemplate(w, ".html", map[string]interface{}{
-		"Id": newID,
-		"Message": "Création réussie",
+		"User_table": returnValue,
+		"Id": id,
 	})
 })
 
