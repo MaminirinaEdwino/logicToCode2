@@ -29,8 +29,9 @@ type ModelMeta struct {
 
 type QueryContext struct {
 	Model         ModelMeta
-	Operation     string   // SELECT, INSERT, UPDATE, DELETE
-	SelectFields  []string // Champs retenus par le Select pour la requête
+	Operation     string   // SELECT, CREATE, UPDATE, DELETE
+	SelectFields  []string // Champs pour SELECT
+	WriteFields   []string // Champs pour INSERT / UPDATE
 	WhereParams   []string // Conditions WHERE
 	StatusCodeVar string
 }
@@ -145,12 +146,12 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 
 	case "rootNode":
 		g.writeIndent()
-		g.builder.WriteString("// Extraction des paramètres d'URL (Path Values)\n")
+		g.builder.WriteString("// Extraction des paramètres d'URL\n")
 		g.writeIndent()
 		g.builder.WriteString("id := r.PathValue(\"id\")\n\n")
 
 	case "modelNode":
-		// Chargement des métadonnées du modèle
+		// 1. Chargement des métadonnées du modèle
 		if m, ok := node.Data["model"].(map[string]any); ok {
 			if nom, ok := m["nom"].(string); ok {
 				ctx.Model.Name = nom
@@ -165,14 +166,34 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 				}
 			}
 		}
+
 		g.writeIndent()
 		g.builder.WriteString(fmt.Sprintf("// --- Modèle cible : %s ---\n", ctx.Model.Name))
 
-	case "selectNode":
-		ctx.Operation = "SELECT"
-		var selected []string
+		// 2. Détection de l'opération CRUD via l'enfant direct
+		if len(node.Children) == 0 {
+			g.writeIndent()
+			g.builder.WriteString("// ERREUR : Aucun nœud d'action relié au modelNode !\n")
+			return
+		}
 
-		// Vérification explicite : comparaison des clés du data du selectNode avec les champs du modèle
+		actionNode := node.Children[0]
+		switch actionNode.Type {
+		case "selectNode":
+			ctx.Operation = "SELECT"
+		case "createNode":
+			ctx.Operation = "CREATE"
+		case "updateNode":
+			ctx.Operation = "UPDATE"
+		case "deleteNode":
+			ctx.Operation = "DELETE"
+		default:
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("// ERREUR : Action non supportée [%s] après modelNode\n", actionNode.Type))
+		}
+
+	case "selectNode":
+		var selected []string
 		for _, field := range ctx.Model.Fields {
 			if val, exists := node.Data[field.Nom]; exists {
 				if isSelected, ok := val.(bool); ok && isSelected {
@@ -180,18 +201,101 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 				}
 			}
 		}
-
-		// Fallback : si aucun champ sélectionné n'a été trouvé dans data, on retient tous les champs du modèle
 		if len(selected) == 0 {
 			for _, field := range ctx.Model.Fields {
 				selected = append(selected, field.Nom)
 			}
 		}
-
 		ctx.SelectFields = selected
 
 		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("// Sélection configurée sur les champs : [%s]\n", strings.Join(selected, ", ")))
+		g.builder.WriteString(fmt.Sprintf("// Action SELECT sur : [%s]\n", strings.Join(selected, ", ")))
+
+	case "createNode":
+		// Extraction des champs à insérer (ex: hors clé primaire auto-incrémentée)
+		var writeFields []string
+		for _, f := range ctx.Model.Fields {
+			if f.Nom != "id" { // Ignore l'ID par défaut pour la création
+				writeFields = append(writeFields, f.Nom)
+			}
+		}
+		ctx.WriteFields = writeFields
+		ctx.StatusCodeVar = "http.StatusCreated"
+
+		g.writeIndent()
+		g.builder.WriteString("// Action CREATE (INSERT)\n")
+		g.writeIndent()
+		g.builder.WriteString("type createInput struct {\n")
+		g.indent++
+		for _, fName := range writeFields {
+			goType := "string"
+			for _, f := range ctx.Model.Fields {
+				if f.Nom == fName && f.Type == "int" {
+					goType = "int"
+				}
+			}
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capitalize(fName), goType, fName))
+		}
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n")
+		g.writeIndent()
+		g.builder.WriteString("var input createInput\n")
+		g.writeIndent()
+		g.builder.WriteString("if err := json.NewDecoder(r.Body).Decode(&input); err != nil {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("http.Error(w, \"Payload invalide\", http.StatusBadRequest)\n")
+		g.writeIndent()
+		g.builder.WriteString("return\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+	case "updateNode":
+		var writeFields []string
+		for _, f := range ctx.Model.Fields {
+			if f.Nom != "id" {
+				writeFields = append(writeFields, f.Nom)
+			}
+		}
+		ctx.WriteFields = writeFields
+
+		g.writeIndent()
+		g.builder.WriteString("// Action UPDATE\n")
+		g.writeIndent()
+		g.builder.WriteString("type updateInput struct {\n")
+		g.indent++
+		for _, fName := range writeFields {
+			goType := "string"
+			for _, f := range ctx.Model.Fields {
+				if f.Nom == fName && f.Type == "int" {
+					goType = "int"
+				}
+			}
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capitalize(fName), goType, fName))
+		}
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n")
+		g.writeIndent()
+		g.builder.WriteString("var input updateInput\n")
+		g.writeIndent()
+		g.builder.WriteString("if err := json.NewDecoder(r.Body).Decode(&input); err != nil {\n")
+		g.indent++
+		g.writeIndent()
+		g.builder.WriteString("http.Error(w, \"Payload invalide\", http.StatusBadRequest)\n")
+		g.writeIndent()
+		g.builder.WriteString("return\n")
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n\n")
+
+	case "deleteNode":
+		g.writeIndent()
+		g.builder.WriteString("// Action DELETE\n")
 
 	case "whereNode":
 		g.writeIndent()
@@ -200,46 +304,84 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 
 	case "returnNode":
 		g.writeIndent()
-		g.builder.WriteString("// Structure de retour générée\n")
-		g.writeIndent()
-		g.builder.WriteString("type returnType struct {\n")
-		g.indent++
-
-		var scanPointers []string
-		for _, fieldName := range ctx.SelectFields {
-			goType := "string"
-			for _, f := range ctx.Model.Fields {
-				if f.Nom == fieldName && f.Type == "int" {
-					goType = "int"
-				}
-			}
-			capName := capitalize(fieldName)
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capName, goType, fieldName))
-			scanPointers = append(scanPointers, fmt.Sprintf("&returnValue.%s", capName))
-		}
-
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n\n")
-
-		g.writeIndent()
-		g.builder.WriteString("var returnValue returnType\n")
+		g.builder.WriteString("// Exécution SQL selon le mode d'opération\n")
 
 		whereClause := ""
 		if len(ctx.WhereParams) > 0 {
 			whereClause = " WHERE " + strings.Join(ctx.WhereParams, " AND ")
 		}
 
-		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n", strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereClause))
-		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, id).Scan(%s)\n", strings.Join(scanPointers, ", ")))
+		switch ctx.Operation {
+
+		case "SELECT":
+			g.writeIndent()
+			g.builder.WriteString("type returnType struct {\n")
+			g.indent++
+			var scanPointers []string
+			for _, fieldName := range ctx.SelectFields {
+				goType := "string"
+				for _, f := range ctx.Model.Fields {
+					if f.Nom == fieldName && f.Type == "int" {
+						goType = "int"
+					}
+				}
+				capName := capitalize(fieldName)
+				g.writeIndent()
+				g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capName, goType, fieldName))
+				scanPointers = append(scanPointers, fmt.Sprintf("&returnValue.%s", capName))
+			}
+			g.indent--
+			g.writeIndent()
+			g.builder.WriteString("}\n\n")
+
+			g.writeIndent()
+			g.builder.WriteString("var returnValue returnType\n")
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n", strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereClause))
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, id).Scan(%s)\n", strings.Join(scanPointers, ", ")))
+
+		case "CREATE":
+			var placeholders []string
+			var args []string
+			for i, fName := range ctx.WriteFields {
+				placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+				args = append(args, "input."+capitalize(fName))
+			}
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("query := \"INSERT INTO %s (%s) VALUES (%s) RETURNING id\"\n",
+				ctx.Model.Name, strings.Join(ctx.WriteFields, ", "), strings.Join(placeholders, ", ")))
+			g.writeIndent()
+			g.builder.WriteString("var newID int\n")
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, %s).Scan(&newID)\n", strings.Join(args, ", ")))
+
+		case "UPDATE":
+			var setClauses []string
+			var args []string
+			for i, fName := range ctx.WriteFields {
+				setClauses = append(setClauses, fmt.Sprintf("%s = $%d", fName, i+1))
+				args = append(args, "input."+capitalize(fName))
+			}
+			args = append(args, "id")
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("query := \"UPDATE %s SET %s WHERE id = $%d\"\n",
+				ctx.Model.Name, strings.Join(setClauses, ", "), len(args)))
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("_, err := db.Exec(query, %s)\n", strings.Join(args, ", ")))
+
+		case "DELETE":
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("query := \"DELETE FROM %s%s\"\n", ctx.Model.Name, whereClause))
+			g.writeIndent()
+			g.builder.WriteString("_, err := db.Exec(query, id)\n")
+		}
+
 		g.writeIndent()
 		g.builder.WriteString("if err != nil {\n")
 		g.indent++
 		g.writeIndent()
-		g.builder.WriteString("http.Error(w, \"Ressource introuvable\", http.StatusNotFound)\n")
+		g.builder.WriteString("http.Error(w, \"Erreur lors de l'exécution de la requête\", http.StatusInternalServerError)\n")
 		g.writeIndent()
 		g.builder.WriteString("return\n")
 		g.indent--
@@ -249,10 +391,20 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 	case "responseNode":
 		g.writeIndent()
 		g.builder.WriteString(fmt.Sprintf("w.WriteHeader(%s)\n", ctx.StatusCodeVar))
-		g.writeIndent()
-		g.builder.WriteString("w.Header().Set(\"Content-Type\", \"application/json\")\n")
-		g.writeIndent()
-		g.builder.WriteString("json.NewEncoder(w).Encode(returnValue)\n")
+		if ctx.Operation == "SELECT" {
+			g.writeIndent()
+			g.builder.WriteString("w.Header().Set(\"Content-Type\", \"application/json\")\n")
+			g.writeIndent()
+			g.builder.WriteString("json.NewEncoder(w).Encode(returnValue)\n")
+		} else if ctx.Operation == "CREATE" {
+			g.writeIndent()
+			g.builder.WriteString("w.Header().Set(\"Content-Type\", \"application/json\")\n")
+			g.writeIndent()
+			g.builder.WriteString("json.NewEncoder(w).Encode(map[string]any{\"id\": newID, \"message\": \"Créé avec succès\"})\n")
+		} else {
+			g.writeIndent()
+			g.builder.WriteString("json.NewEncoder(w).Encode(map[string]string{\"message\": \"Opération réussie\"})\n")
+		}
 	}
 
 	for _, child := range node.Children {
@@ -270,8 +422,20 @@ func capitalize(s string) string {
 // --- Test d'exécution ---
 
 func main() {
-	nodesJSON := `[{"id":"rootNode_6pdmo","type":"rootNode","position":{"x":31.5,"y":186},"data":{"name":"rootNode"}},{"id":"modelNode_9tfo7","type":"modelNode","position":{"x":128,"y":142.5},"data":{"name":"voiture","model":{"nom":"voiture","champs":[{"nom":"id","type":"int","default_value":"autoincrement"},{"nom":"mark","type":"string","default_value":""},{"nom":"number","type":"string","default_value":""}]}}},{"id":"selectNode_um68t","type":"selectNode","position":{"x":501.37,"y":158.99},"data":{"name":"selectNode","selectedType":"ALL","id":true,"mark":true,"number":false}},{"id":"whereNode_r9a9o","type":"whereNode","position":{"x":819.14,"y":167.59},"data":{"name":"whereNode"}},{"id":"returnNode_ki1vw","type":"returnNode","position":{"x":1092.8,"y":187.59},"data":{"name":"returnNode"}},{"id":"responseNode_fkvv7","type":"responseNode","position":{"x":1334.66,"y":247.00},"data":{"response":[]}}]`
-	edgesJSON := `[{"source":"rootNode_6pdmo","target":"modelNode_9tfo7","id":"e1"},{"id":"e2","source":"modelNode_9tfo7","target":"selectNode_um68t"},{"id":"e3","source":"selectNode_um68t","target":"whereNode_r9a9o"},{"id":"e4","source":"whereNode_r9a9o","target":"returnNode_ki1vw"},{"source":"returnNode_ki1vw","target":"responseNode_fkvv7","id":"e5"}]`
+	// Exemple avec un createNode branché après le modelNode
+	nodesJSON := `[
+		{"id":"rootNode_1","type":"rootNode","data":{"name":"rootNode"}},
+		{"id":"modelNode_1","type":"modelNode","data":{"model":{"nom":"voiture","champs":[{"nom":"id","type":"int"},{"nom":"mark","type":"string"},{"nom":"number","type":"string"}]}}},
+		{"id":"createNode_1","type":"createNode","data":{"name":"createNode"}},
+		{"id":"returnNode_1","type":"returnNode","data":{"name":"returnNode"}},
+		{"id":"responseNode_1","type":"responseNode","data":{}}
+	]`
+	edgesJSON := `[
+		{"source":"rootNode_1","target":"modelNode_1","id":"e1"},
+		{"source":"modelNode_1","target":"createNode_1","id":"e2"},
+		{"source":"createNode_1","target":"returnNode_1","id":"e3"},
+		{"source":"returnNode_1","target":"responseNode_1","id":"e4"}
+	]`
 
 	roots, err := BuildTurboStackHierarchy(nodesJSON, edgesJSON)
 	if err != nil {
@@ -279,7 +443,7 @@ func main() {
 	}
 
 	gen := &TurboStackGenerator{}
-	code := gen.GenerateRoute("GET /voitures/{id}", roots)
+	code := gen.GenerateRoute("POST /voitures", roots)
 
 	fmt.Println(code)
 }

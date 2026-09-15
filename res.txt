@@ -1,29 +1,33 @@
-mux.HandleFunc("GET /voitures/{id}", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("POST /voitures", func(w http.ResponseWriter, r *http.Request) {
 	db := config.ConnectDB()
 	defer db.Close()
 
-	// Extraction des paramètres d'URL (Path Values)
+	// Extraction des paramètres d'URL
 	id := r.PathValue("id")
 
 	// --- Modèle cible : voiture ---
-	// Sélection configurée sur les champs : [id, mark]
-	// Clause d'exclusion / Filtre (WHERE)
-	// Structure de retour générée
-	type returnType struct {
-		Id int `json:"id"`
+	// Action CREATE (INSERT)
+	type createInput struct {
 		Mark string `json:"mark"`
+		Number string `json:"number"`
 	}
-
-	var returnValue returnType
-	query := "SELECT id, mark FROM voiture WHERE id = $1"
-	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Mark)
-	if err != nil {
-		http.Error(w, "Ressource introuvable", http.StatusNotFound)
+	var input createInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Payload invalide", http.StatusBadRequest)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	// Exécution SQL selon le mode d'opération
+	query := "INSERT INTO voiture (mark, number) VALUES ($1, $2) RETURNING id"
+	var newID int
+	err := db.QueryRow(query, input.Mark, input.Number).Scan(&newID)
+	if err != nil {
+		http.Error(w, "Erreur lors de l'exécution de la requête", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(returnValue)
+	json.NewEncoder(w).Encode(map[string]any{"id": newID, "message": "Créé avec succès"})
 })
 
