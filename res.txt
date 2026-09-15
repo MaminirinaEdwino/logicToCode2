@@ -2,23 +2,21 @@ mux.HandleFunc("GET /voitures/{id}", func(w http.ResponseWriter, r *http.Request
 	db := config.ConnectDB()
 	defer db.Close()
 
-	w.WriteHeader(http.StatusOK)
 	// Extraction des paramètres d'URL (Path Values)
 	id := r.PathValue("id")
 
 	// --- Modèle cible : voiture ---
-	// Préparation de la sélection sur [id, mark, number]
+	// Sélection configurée sur les champs : [id, mark]
 	// Clause d'exclusion / Filtre (WHERE)
 	// Structure de retour générée
 	type returnType struct {
 		Id int `json:"id"`
 		Mark string `json:"mark"`
-		Number string `json:"number"`
 	}
 
 	var returnValue returnType
-	query := "SELECT id, mark, number FROM voiture WHERE id = $1"
-	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Mark, &returnValue.Number)
+	query := "SELECT id, mark FROM voiture WHERE id = $1"
+	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Mark)
 	if err != nil {
 		http.Error(w, "Ressource introuvable", http.StatusNotFound)
 		return

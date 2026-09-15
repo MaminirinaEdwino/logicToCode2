@@ -30,9 +30,9 @@ type ModelMeta struct {
 type QueryContext struct {
 	Model         ModelMeta
 	Operation     string   // SELECT, INSERT, UPDATE, DELETE
-	SelectFields  []string // Champs retenus par le Select
+	SelectFields  []string // Champs retenus par le Select pour la requête
 	WhereParams   []string // Conditions WHERE
-	StatusCodeVar string   // Reçu depuis statusCodeNode
+	StatusCodeVar string
 }
 
 // --- 2. Construction de la hiérarchie ---
@@ -82,8 +82,6 @@ func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dyna
 		child, childOk := nodeMap[edge.Target]
 
 		if parentOk && childOk {
-			// Ignorer la liaison ascendante vers le handle de statut du responseNode 
-			// pour ne pas casser l'ordre topologique principal
 			if edge.TargetHandle == "response_status" {
 				continue
 			}
@@ -107,7 +105,6 @@ func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dyna
 type TurboStackGenerator struct {
 	builder strings.Builder
 	indent  int
-	nodeMap map[string]*DynamicNode
 }
 
 func (g *TurboStackGenerator) writeIndent() {
@@ -153,8 +150,7 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 		g.builder.WriteString("id := r.PathValue(\"id\")\n\n")
 
 	case "modelNode":
-		// Le modelNode ne génère pas de SQL directement.
-		// Il prépare le contexte métier et transmet à ses enfants (selectNode, createNode, etc.)
+		// Chargement des métadonnées du modèle
 		if m, ok := node.Data["model"].(map[string]any); ok {
 			if nom, ok := m["nom"].(string); ok {
 				ctx.Model.Name = nom
@@ -175,35 +171,27 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 	case "selectNode":
 		ctx.Operation = "SELECT"
 		var selected []string
-		for _, f := range ctx.Model.Fields {
-			if val, ok := node.Data[f.Nom].(bool); ok && val {
-				selected = append(selected, f.Nom)
+
+		// Vérification explicite : comparaison des clés du data du selectNode avec les champs du modèle
+		for _, field := range ctx.Model.Fields {
+			if val, exists := node.Data[field.Nom]; exists {
+				if isSelected, ok := val.(bool); ok && isSelected {
+					selected = append(selected, field.Nom)
+				}
 			}
 		}
+
+		// Fallback : si aucun champ sélectionné n'a été trouvé dans data, on retient tous les champs du modèle
 		if len(selected) == 0 {
-			for _, f := range ctx.Model.Fields {
-				selected = append(selected, f.Nom)
+			for _, field := range ctx.Model.Fields {
+				selected = append(selected, field.Nom)
 			}
 		}
+
 		ctx.SelectFields = selected
 
 		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("// Préparation de la sélection sur [%s]\n", strings.Join(selected, ", ")))
-
-	case "createNode":
-		ctx.Operation = "INSERT"
-		g.writeIndent()
-		g.builder.WriteString("// Requête de création (INSERT)\n")
-
-	case "updateNode":
-		ctx.Operation = "UPDATE"
-		g.writeIndent()
-		g.builder.WriteString("// Requête de mise à jour (UPDATE)\n")
-
-	case "deleteNode":
-		ctx.Operation = "DELETE"
-		g.writeIndent()
-		g.builder.WriteString("// Requête de suppression (DELETE)\n")
+		g.builder.WriteString(fmt.Sprintf("// Sélection configurée sur les champs : [%s]\n", strings.Join(selected, ", ")))
 
 	case "whereNode":
 		g.writeIndent()
@@ -258,11 +246,6 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 		g.writeIndent()
 		g.builder.WriteString("}\n\n")
 
-	case "statusCodeNode":
-		// Définit le code de statut s'il est utilisé de manière autonome
-		g.writeIndent()
-		g.builder.WriteString("w.WriteHeader(http.StatusOK)\n")
-
 	case "responseNode":
 		g.writeIndent()
 		g.builder.WriteString(fmt.Sprintf("w.WriteHeader(%s)\n", ctx.StatusCodeVar))
@@ -284,11 +267,11 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// --- Exécution sur le Payload ---
+// --- Test d'exécution ---
 
 func main() {
-	nodesJSON := `[{"id":"rootNode_6pdmo","type":"rootNode","position":{"x":31.5,"y":186},"data":{"name":"rootNode"}},{"id":"modelNode_9tfo7","type":"modelNode","position":{"x":128,"y":142.5},"data":{"name":"voiture","model":{"nom":"voiture","champs":[{"nom":"id","type":"int","default_value":"autoincrement"},{"nom":"mark","type":"string","default_value":""},{"nom":"number","type":"string","default_value":""}]}}},{"id":"selectNode_um68t","type":"selectNode","position":{"x":501.37,"y":158.99},"data":{"name":"selectNode","selectedType":"ALL","id":true,"mark":true,"number":true}},{"id":"whereNode_r9a9o","type":"whereNode","position":{"x":819.14,"y":167.59},"data":{"name":"whereNode"}},{"id":"returnNode_ki1vw","type":"returnNode","position":{"x":1092.8,"y":187.59},"data":{"name":"returnNode"}},{"id":"responseNode_fkvv7","type":"responseNode","position":{"x":1334.66,"y":247.00},"data":{"response":[]}},{"id":"response_7awgp","type":"statusCodeNode","position":{"x":1071.64,"y":385.31},"data":{"response":[]}}]`
-	edgesJSON := `[{"source":"rootNode_6pdmo","target":"modelNode_9tfo7","id":"e1"},{"id":"e2","source":"modelNode_9tfo7","target":"selectNode_um68t"},{"id":"e3","source":"selectNode_um68t","target":"whereNode_r9a9o"},{"id":"e4","source":"whereNode_r9a9o","target":"returnNode_ki1vw"},{"source":"returnNode_ki1vw","target":"responseNode_fkvv7","id":"e5"},{"source":"response_7awgp","sourceHandle":"status_code","target":"responseNode_fkvv7","targetHandle":"response_status","id":"e6"}]`
+	nodesJSON := `[{"id":"rootNode_6pdmo","type":"rootNode","position":{"x":31.5,"y":186},"data":{"name":"rootNode"}},{"id":"modelNode_9tfo7","type":"modelNode","position":{"x":128,"y":142.5},"data":{"name":"voiture","model":{"nom":"voiture","champs":[{"nom":"id","type":"int","default_value":"autoincrement"},{"nom":"mark","type":"string","default_value":""},{"nom":"number","type":"string","default_value":""}]}}},{"id":"selectNode_um68t","type":"selectNode","position":{"x":501.37,"y":158.99},"data":{"name":"selectNode","selectedType":"ALL","id":true,"mark":true,"number":false}},{"id":"whereNode_r9a9o","type":"whereNode","position":{"x":819.14,"y":167.59},"data":{"name":"whereNode"}},{"id":"returnNode_ki1vw","type":"returnNode","position":{"x":1092.8,"y":187.59},"data":{"name":"returnNode"}},{"id":"responseNode_fkvv7","type":"responseNode","position":{"x":1334.66,"y":247.00},"data":{"response":[]}}]`
+	edgesJSON := `[{"source":"rootNode_6pdmo","target":"modelNode_9tfo7","id":"e1"},{"id":"e2","source":"modelNode_9tfo7","target":"selectNode_um68t"},{"id":"e3","source":"selectNode_um68t","target":"whereNode_r9a9o"},{"id":"e4","source":"whereNode_r9a9o","target":"returnNode_ki1vw"},{"source":"returnNode_ki1vw","target":"responseNode_fkvv7","id":"e5"}]`
 
 	roots, err := BuildTurboStackHierarchy(nodesJSON, edgesJSON)
 	if err != nil {
