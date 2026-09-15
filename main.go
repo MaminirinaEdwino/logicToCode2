@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// --- 1. Structure de l'Arbre TurboStack ---
+// --- 1. Structures de données du Graphe ---
 
 type DynamicNode struct {
 	ID       string         `json:"id"`
@@ -17,7 +17,25 @@ type DynamicNode struct {
 	Children []*DynamicNode `json:"children"`
 }
 
-// --- 2. Construction du Graphe TurboStack ---
+type ModelField struct {
+	Nom  string
+	Type string
+}
+
+type ModelMeta struct {
+	Name   string
+	Fields []ModelField
+}
+
+type QueryContext struct {
+	Model         ModelMeta
+	Operation     string   // SELECT, INSERT, UPDATE, DELETE
+	SelectFields  []string // Champs retenus par le Select
+	WhereParams   []string // Conditions WHERE
+	StatusCodeVar string   // Reçu depuis statusCodeNode
+}
+
+// --- 2. Construction de la hiérarchie ---
 
 func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*DynamicNode, error) {
 	var rawNodes []map[string]any
@@ -26,13 +44,14 @@ func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dyna
 	}
 
 	type Edge struct {
-		ID     string `json:"id"`
-		Source string `json:"source"`
-		Target string `json:"target"`
+		ID           string `json:"id"`
+		Source       string `json:"source"`
+		Target       string `json:"target"`
+		SourceHandle string `json:"sourceHandle"`
+		TargetHandle string `json:"targetHandle"`
 	}
 	var edges []Edge
 	if err := json.Unmarshal([]byte(edgesRawJSON), &edges); err != nil {
-		// Tolérance si edges est vide ("[]")
 		edges = []Edge{}
 	}
 
@@ -63,6 +82,11 @@ func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dyna
 		child, childOk := nodeMap[edge.Target]
 
 		if parentOk && childOk {
+			// Ignorer la liaison ascendante vers le handle de statut du responseNode 
+			// pour ne pas casser l'ordre topologique principal
+			if edge.TargetHandle == "response_status" {
+				continue
+			}
 			parent.Children = append(parent.Children, child)
 			inDegree[edge.Target]++
 		}
@@ -78,11 +102,12 @@ func BuildTurboStackHierarchy(nodesRawJSON string, edgesRawJSON string) ([]*Dyna
 	return roots, nil
 }
 
-// --- 3. Générateur de Code Native HTTP pour TurboStack ---
+// --- 3. Générateur de Code HTTP Native ---
 
 type TurboStackGenerator struct {
 	builder strings.Builder
 	indent  int
+	nodeMap map[string]*DynamicNode
 }
 
 func (g *TurboStackGenerator) writeIndent() {
@@ -95,12 +120,6 @@ func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*Dynami
 	g.builder.Reset()
 	g.indent = 0
 
-	method := "GET"
-	parts := strings.Split(routePattern, " ")
-	if len(parts) > 1 {
-		method = strings.ToUpper(parts[0])
-	}
-
 	g.builder.WriteString(fmt.Sprintf("mux.HandleFunc(%q, func(w http.ResponseWriter, r *http.Request) {\n", routePattern))
 	g.indent++
 
@@ -109,8 +128,12 @@ func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*Dynami
 	g.writeIndent()
 	g.builder.WriteString("defer db.Close()\n\n")
 
+	ctx := &QueryContext{
+		StatusCodeVar: "http.StatusOK",
+	}
+
 	for _, root := range roots {
-		g.traverseAndGenerate(root, method)
+		g.traverseAndGenerate(root, ctx)
 	}
 
 	g.indent--
@@ -120,183 +143,137 @@ func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*Dynami
 	return g.builder.String()
 }
 
-func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, httpMethod string) {
-	fmt.Println("node", node)
+func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryContext) {
 	switch node.Type {
 
 	case "rootNode":
 		g.writeIndent()
-		g.builder.WriteString("// Variables d'URL (Path Values)\n")
+		g.builder.WriteString("// Extraction des paramètres d'URL (Path Values)\n")
 		g.writeIndent()
 		g.builder.WriteString("id := r.PathValue(\"id\")\n\n")
 
-	case "varNode":
-		varName, _ := node.Data["name"].(string)
-		varType, _ := node.Data["type"].(string)
-		defaultVal, _ := node.Data["default value"].(string)
-
-		if varName != "" {
-			goType := "string"
-			if varType == "int" {
-				goType = "int"
-			} else if varType == "bool" {
-				goType = "bool"
-			}
-
-			g.writeIndent()
-			if defaultVal != "" {
-				g.builder.WriteString(fmt.Sprintf("var %s %s = %q\n", varName, goType, defaultVal))
-			} else {
-				g.builder.WriteString(fmt.Sprintf("var %s %s\n", varName, goType))
-			}
-		}
-
-	case "bodyParamsNode":
-		// Extraction des paramètres du body
-		if bodyData, ok := node.Data["bodyParams"].(map[string]any); ok {
-			if field, ok := bodyData["field"].(map[string]any); ok {
-				fNom, _ := field["nom"].(string)
-				fType, _ := field["type"].(string)
-
-				goType := "string"
-				if fType == "int" {
-					goType = "int"
-				}
-
-				g.writeIndent()
-				g.builder.WriteString(fmt.Sprintf("// Paramètre du body : %s (%s)\n", fNom, goType))
-			}
-		}
-
 	case "modelNode":
-		modelTableName := "User_table"
-		var fields []string
-		var structFields []string
-		var scanPointers []string
-
+		// Le modelNode ne génère pas de SQL directement.
+		// Il prépare le contexte métier et transmet à ses enfants (selectNode, createNode, etc.)
 		if m, ok := node.Data["model"].(map[string]any); ok {
 			if nom, ok := m["nom"].(string); ok {
-				modelTableName = nom
+				ctx.Model.Name = nom
 			}
 			if champs, ok := m["champs"].([]any); ok {
 				for _, c := range champs {
 					if champMap, ok := c.(map[string]any); ok {
 						fNom, _ := champMap["nom"].(string)
 						fType, _ := champMap["type"].(string)
-
-						goType := "string"
-						if fType == "int" {
-							goType = "int"
-						}
-
-						capitalizedNom := capitalize(fNom)
-						fields = append(fields, fNom)
-						structFields = append(structFields, fmt.Sprintf("%s %s `json:%q`", capitalizedNom, goType, fNom))
-						scanPointers = append(scanPointers, fmt.Sprintf("&returnValue.%s", capitalizedNom))
+						ctx.Model.Fields = append(ctx.Model.Fields, ModelField{Nom: fNom, Type: fType})
 					}
 				}
 			}
 		}
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("// --- Modèle cible : %s ---\n", ctx.Model.Name))
 
-		if len(fields) == 0 {
-			fields = []string{"id", "username", "password", "email", "role"}
-			structFields = []string{
-				"Id int `json:\"id\"`",
-				"Username string `json:\"username\"`",
-				"Password string `json:\"password\"`",
-				"Email string `json:\"email\"`",
-				"Role string `json:\"role\"`",
+	case "selectNode":
+		ctx.Operation = "SELECT"
+		var selected []string
+		for _, f := range ctx.Model.Fields {
+			if val, ok := node.Data[f.Nom].(bool); ok && val {
+				selected = append(selected, f.Nom)
 			}
-			scanPointers = []string{"&returnValue.Id", "&returnValue.Username", "&returnValue.Password", "&returnValue.Email", "&returnValue.Role"}
 		}
+		if len(selected) == 0 {
+			for _, f := range ctx.Model.Fields {
+				selected = append(selected, f.Nom)
+			}
+		}
+		ctx.SelectFields = selected
 
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("// Préparation de la sélection sur [%s]\n", strings.Join(selected, ", ")))
+
+	case "createNode":
+		ctx.Operation = "INSERT"
+		g.writeIndent()
+		g.builder.WriteString("// Requête de création (INSERT)\n")
+
+	case "updateNode":
+		ctx.Operation = "UPDATE"
+		g.writeIndent()
+		g.builder.WriteString("// Requête de mise à jour (UPDATE)\n")
+
+	case "deleteNode":
+		ctx.Operation = "DELETE"
+		g.writeIndent()
+		g.builder.WriteString("// Requête de suppression (DELETE)\n")
+
+	case "whereNode":
+		g.writeIndent()
+		g.builder.WriteString("// Clause d'exclusion / Filtre (WHERE)\n")
+		ctx.WhereParams = append(ctx.WhereParams, "id = $1")
+
+	case "returnNode":
+		g.writeIndent()
+		g.builder.WriteString("// Structure de retour générée\n")
 		g.writeIndent()
 		g.builder.WriteString("type returnType struct {\n")
 		g.indent++
-		for _, sf := range structFields {
+
+		var scanPointers []string
+		for _, fieldName := range ctx.SelectFields {
+			goType := "string"
+			for _, f := range ctx.Model.Fields {
+				if f.Nom == fieldName && f.Type == "int" {
+					goType = "int"
+				}
+			}
+			capName := capitalize(fieldName)
 			g.writeIndent()
-			g.builder.WriteString(sf + "\n")
+			g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capName, goType, fieldName))
+			scanPointers = append(scanPointers, fmt.Sprintf("&returnValue.%s", capName))
 		}
+
 		g.indent--
 		g.writeIndent()
 		g.builder.WriteString("}\n\n")
 
 		g.writeIndent()
 		g.builder.WriteString("var returnValue returnType\n")
+
+		whereClause := ""
+		if len(ctx.WhereParams) > 0 {
+			whereClause = " WHERE " + strings.Join(ctx.WhereParams, " AND ")
+		}
+
 		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("query := \"select %s from %s where id = $1\"\n", strings.Join(fields, ", "), modelTableName))
+		g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n", strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereClause))
 		g.writeIndent()
 		g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, id).Scan(%s)\n", strings.Join(scanPointers, ", ")))
 		g.writeIndent()
 		g.builder.WriteString("if err != nil {\n")
 		g.indent++
 		g.writeIndent()
-		g.builder.WriteString("http.Error(w, \"model introuvable\", http.StatusNotFound)\n")
+		g.builder.WriteString("http.Error(w, \"Ressource introuvable\", http.StatusNotFound)\n")
 		g.writeIndent()
 		g.builder.WriteString("return\n")
 		g.indent--
 		g.writeIndent()
 		g.builder.WriteString("}\n\n")
 
-	case "tryCatchNode":
-		g.writeIndent()
-		g.builder.WriteString("// --- Bloc Try / Catch ---\n")
-
-	case "ifElseNode":
-		g.writeIndent()
-		g.builder.WriteString("if true {\n")
-		g.indent++
-		g.writeIndent()
-		g.builder.WriteString("// Logique IF\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("} else {\n")
-		g.indent++
-		g.writeIndent()
-		g.builder.WriteString("// Logique ELSE\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n\n")
-
-	case "forNode":
-		g.writeIndent()
-		g.builder.WriteString("for i := 0; i < 10; i++ {\n")
-		g.indent++
-		g.writeIndent()
-		g.builder.WriteString("// Logique Boucle FOR\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n\n")
-
-	case "whileNode":
-		g.writeIndent()
-		g.builder.WriteString("for true {\n")
-		g.indent++
-		g.writeIndent()
-		g.builder.WriteString("// Logique Boucle WHILE\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n\n")
-
 	case "statusCodeNode":
+		// Définit le code de statut s'il est utilisé de manière autonome
 		g.writeIndent()
 		g.builder.WriteString("w.WriteHeader(http.StatusOK)\n")
 
 	case "responseNode":
 		g.writeIndent()
-		g.builder.WriteString("renderTemplate(w, \".html\", map[string]interface{}{\n")
-		g.indent++
+		g.builder.WriteString(fmt.Sprintf("w.WriteHeader(%s)\n", ctx.StatusCodeVar))
 		g.writeIndent()
-		g.builder.WriteString("\"User_table\": returnValue,\n")
+		g.builder.WriteString("w.Header().Set(\"Content-Type\", \"application/json\")\n")
 		g.writeIndent()
-		g.builder.WriteString("\"Id\": id,\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("})\n")
+		g.builder.WriteString("json.NewEncoder(w).Encode(returnValue)\n")
 	}
 
 	for _, child := range node.Children {
-		g.traverseAndGenerate(child, httpMethod)
+		g.traverseAndGenerate(child, ctx)
 	}
 }
 
@@ -307,12 +284,11 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// --- Execution sur le Payload TurboStack ---
+// --- Exécution sur le Payload ---
 
 func main() {
-	nodesJSON := "[{\"id\":\"rootNode_6pdmo\",\"type\":\"rootNode\",\"position\":{\"x\":31.5,\"y\":186},\"data\":{\"name\":\"rootNode\"},\"measured\":{\"width\":30,\"height\":30},\"selected\":false,\"dragging\":false},{\"id\":\"modelNode_9tfo7\",\"type\":\"modelNode\",\"position\":{\"x\":128,\"y\":142.5},\"data\":{\"name\":\"voiture\",\"model\":{\"nom\":\"voiture\",\"champs\":[{\"nom\":\"id\",\"type\":\"int\",\"default_value\":\"autoincrement\",\"constraint\":[\"primary key\",\"autoincrement\"]},{\"nom\":\"mark\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[]},{\"nom\":\"number\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[\"unique\"]}]}},\"measured\":{\"width\":160,\"height\":167},\"selected\":false,\"dragging\":false},{\"id\":\"selectNode_um68t\",\"type\":\"selectNode\",\"position\":{\"x\":501.375796178344,\"y\":158.99681528662424},\"data\":{\"name\":\"selectNode\",\"selectedType\":\"ALL\",\"model\":{\"nom\":\"voiture\",\"champs\":[{\"nom\":\"id\",\"type\":\"int\",\"default_value\":\"autoincrement\",\"constraint\":[\"primary key\",\"autoincrement\"]},{\"nom\":\"mark\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[]},{\"nom\":\"number\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[\"unique\"]}]},\"id\":true,\"mark\":true,\"number\":true},\"measured\":{\"width\":232,\"height\":190},\"selected\":false,\"dragging\":false},{\"id\":\"whereNode_r9a9o\",\"type\":\"whereNode\",\"position\":{\"x\":819.1464968152867,\"y\":167.5955414012739},\"data\":{\"name\":\"whereNode\",\"selectedType\":\"ALL\",\"model\":{\"nom\":\"voiture\",\"champs\":[{\"nom\":\"id\",\"type\":\"int\",\"default_value\":\"autoincrement\",\"constraint\":[\"primary key\",\"autoincrement\"]},{\"nom\":\"mark\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[]},{\"nom\":\"number\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[\"unique\"]}]},\"voiture_check_id\":false,\"voiture_check_mark\":false},\"measured\":{\"width\":160,\"height\":151},\"selected\":false,\"dragging\":false},{\"id\":\"returnNode_ki1vw\",\"type\":\"returnNode\",\"position\":{\"x\":1092.80751001931,\"y\":187.5955414012739},\"data\":{\"name\":\"returnNode\",\"model\":{\"nom\":\"voiture\",\"champs\":[{\"nom\":\"id\",\"type\":\"int\",\"default_value\":\"autoincrement\",\"constraint\":[\"primary key\",\"autoincrement\"]},{\"nom\":\"mark\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[]},{\"nom\":\"number\",\"type\":\"string\",\"default_value\":\"\",\"constraint\":[\"unique\"]}]},\"id\":true,\"mark\":true,\"number\":true},\"measured\":{\"width\":160,\"height\":137},\"selected\":false,\"dragging\":false},{\"id\":\"responseNode_fkvv7\",\"type\":\"responseNode\",\"position\":{\"x\":1334.6610617441002,\"y\":247.0064328840504},\"data\":{\"response\":[]},\"measured\":{\"width\":160,\"height\":83},\"selected\":false,\"dragging\":false},{\"id\":\"response_7awgp\",\"type\":\"statusCodeNode\",\"position\":{\"x\":1071.6441632974104,\"y\":385.3135856716944},\"data\":{\"response\":[]},\"measured\":{\"width\":210,\"height\":89},\"selected\":true,\"dragging\":false}]"
-	edgesJSON := "[{\"source\":\"rootNode_6pdmo\",\"target\":\"modelNode_9tfo7\",\"targetHandle\":\"model_handle_target\",\"id\":\"xy-edge__rootNode_6pdmo-modelNode_9tfo7model_handle_target\"},{\"id\":\"e-modelNode_9tfo7-selectNode_um68t\",\"source\":\"modelNode_9tfo7\",\"target\":\"selectNode_um68t\",\"style\":{\"stroke\":\"#4ecdc4\"}},{\"id\":\"e-modelNode_9tfo7-selectNode_fooop\",\"source\":\"modelNode_9tfo7\",\"target\":\"selectNode_fooop\",\"style\":{\"stroke\":\"#4ecdc4\"}},{\"id\":\"e-selectNode_um68t-whereNode_r9a9o\",\"source\":\"selectNode_um68t\",\"target\":\"whereNode_r9a9o\",\"style\":{\"stroke\":\"#4ecdc4\"}},{\"id\":\"e-selectNode_um68t-whereNode_t5x8q\",\"source\":\"selectNode_um68t\",\"target\":\"whereNode_t5x8q\",\"style\":{\"stroke\":\"#4ecdc4\"}},{\"id\":\"e-whereNode_r9a9o-returnNode_ki1vw\",\"source\":\"whereNode_r9a9o\",\"target\":\"returnNode_ki1vw\",\"style\":{\"stroke\":\"#4ecdc4\"}},{\"id\":\"e-whereNode_r9a9o-returnNode_f9j23\",\"source\":\"whereNode_r9a9o\",\"target\":\"returnNode_f9j23\",\"style\":{\"stroke\":\"#4ecdc4\"}},{\"source\":\"returnNode_ki1vw\",\"target\":\"responseNode_fkvv7\",\"targetHandle\":\"connect_from_parent\",\"id\":\"xy-edge__returnNode_ki1vw-responseNode_fkvv7connect_from_parent\"},{\"source\":\"response_7awgp\",\"sourceHandle\":\"status_code\",\"target\":\"responseNode_fkvv7\",\"targetHandle\":\"response_status\",\"id\":\"xy-edge__response_7awgpstatus_code-responseNode_fkvv7response_status\"}]"
-
+	nodesJSON := `[{"id":"rootNode_6pdmo","type":"rootNode","position":{"x":31.5,"y":186},"data":{"name":"rootNode"}},{"id":"modelNode_9tfo7","type":"modelNode","position":{"x":128,"y":142.5},"data":{"name":"voiture","model":{"nom":"voiture","champs":[{"nom":"id","type":"int","default_value":"autoincrement"},{"nom":"mark","type":"string","default_value":""},{"nom":"number","type":"string","default_value":""}]}}},{"id":"selectNode_um68t","type":"selectNode","position":{"x":501.37,"y":158.99},"data":{"name":"selectNode","selectedType":"ALL","id":true,"mark":true,"number":true}},{"id":"whereNode_r9a9o","type":"whereNode","position":{"x":819.14,"y":167.59},"data":{"name":"whereNode"}},{"id":"returnNode_ki1vw","type":"returnNode","position":{"x":1092.8,"y":187.59},"data":{"name":"returnNode"}},{"id":"responseNode_fkvv7","type":"responseNode","position":{"x":1334.66,"y":247.00},"data":{"response":[]}},{"id":"response_7awgp","type":"statusCodeNode","position":{"x":1071.64,"y":385.31},"data":{"response":[]}}]`
+	edgesJSON := `[{"source":"rootNode_6pdmo","target":"modelNode_9tfo7","id":"e1"},{"id":"e2","source":"modelNode_9tfo7","target":"selectNode_um68t"},{"id":"e3","source":"selectNode_um68t","target":"whereNode_r9a9o"},{"id":"e4","source":"whereNode_r9a9o","target":"returnNode_ki1vw"},{"source":"returnNode_ki1vw","target":"responseNode_fkvv7","id":"e5"},{"source":"response_7awgp","sourceHandle":"status_code","target":"responseNode_fkvv7","targetHandle":"response_status","id":"e6"}]`
 
 	roots, err := BuildTurboStackHierarchy(nodesJSON, edgesJSON)
 	if err != nil {
@@ -320,7 +296,7 @@ func main() {
 	}
 
 	gen := &TurboStackGenerator{}
-	code := gen.GenerateRoute("GET /test/{id}/{username}", roots)
+	code := gen.GenerateRoute("GET /voitures/{id}", roots)
 
 	fmt.Println(code)
 }

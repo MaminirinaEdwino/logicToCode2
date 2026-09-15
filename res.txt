@@ -1,18 +1,15 @@
-node &{rootNode_6pdmo rootNode map[name:rootNode] map[data:map[name:rootNode] dragging:false id:rootNode_6pdmo measured:map[height:30 width:30] position:map[x:31.5 y:186] selected:false type:rootNode] [0x37407ac0c050]}
-node &{modelNode_9tfo7 modelNode map[model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:voiture] map[data:map[model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:voiture] dragging:false id:modelNode_9tfo7 measured:map[height:167 width:160] position:map[x:128 y:142.5] selected:false type:modelNode] [0x37407ac0c0a0]}
-node &{selectNode_um68t selectNode map[id:true mark:true model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:selectNode number:true selectedType:ALL] map[data:map[id:true mark:true model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:selectNode number:true selectedType:ALL] dragging:false id:selectNode_um68t measured:map[height:190 width:232] position:map[x:501.375796178344 y:158.99681528662424] selected:false type:selectNode] [0x37407ac0c0f0]}
-node &{whereNode_r9a9o whereNode map[model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:whereNode selectedType:ALL voiture_check_id:false voiture_check_mark:false] map[data:map[model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:whereNode selectedType:ALL voiture_check_id:false voiture_check_mark:false] dragging:false id:whereNode_r9a9o measured:map[height:151 width:160] position:map[x:819.1464968152867 y:167.5955414012739] selected:false type:whereNode] [0x37407ac0c140]}
-node &{returnNode_ki1vw returnNode map[id:true mark:true model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:returnNode number:true] map[data:map[id:true mark:true model:map[champs:[map[constraint:[primary key autoincrement] default_value:autoincrement nom:id type:int] map[constraint:[] default_value: nom:mark type:string] map[constraint:[unique] default_value: nom:number type:string]] nom:voiture] name:returnNode number:true] dragging:false id:returnNode_ki1vw measured:map[height:137 width:160] position:map[x:1092.80751001931 y:187.5955414012739] selected:false type:returnNode] [0x37407ac0c190]}
-node &{responseNode_fkvv7 responseNode map[response:[]] map[data:map[response:[]] dragging:false id:responseNode_fkvv7 measured:map[height:83 width:160] position:map[x:1334.6610617441002 y:247.0064328840504] selected:false type:responseNode] []}
-node &{response_7awgp statusCodeNode map[response:[]] map[data:map[response:[]] dragging:false id:response_7awgp measured:map[height:89 width:210] position:map[x:1071.6441632974104 y:385.3135856716944] selected:true type:statusCodeNode] [0x37407ac0c190]}
-node &{responseNode_fkvv7 responseNode map[response:[]] map[data:map[response:[]] dragging:false id:responseNode_fkvv7 measured:map[height:83 width:160] position:map[x:1334.6610617441002 y:247.0064328840504] selected:false type:responseNode] []}
-mux.HandleFunc("GET /test/{id}/{username}", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("GET /voitures/{id}", func(w http.ResponseWriter, r *http.Request) {
 	db := config.ConnectDB()
 	defer db.Close()
 
-	// Variables d'URL (Path Values)
+	w.WriteHeader(http.StatusOK)
+	// Extraction des paramètres d'URL (Path Values)
 	id := r.PathValue("id")
 
+	// --- Modèle cible : voiture ---
+	// Préparation de la sélection sur [id, mark, number]
+	// Clause d'exclusion / Filtre (WHERE)
+	// Structure de retour générée
 	type returnType struct {
 		Id int `json:"id"`
 		Mark string `json:"mark"`
@@ -20,21 +17,15 @@ mux.HandleFunc("GET /test/{id}/{username}", func(w http.ResponseWriter, r *http.
 	}
 
 	var returnValue returnType
-	query := "select id, mark, number from voiture where id = $1"
+	query := "SELECT id, mark, number FROM voiture WHERE id = $1"
 	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Mark, &returnValue.Number)
 	if err != nil {
-		http.Error(w, "model introuvable", http.StatusNotFound)
+		http.Error(w, "Ressource introuvable", http.StatusNotFound)
 		return
 	}
 
-	renderTemplate(w, ".html", map[string]interface{}{
-		"User_table": returnValue,
-		"Id": id,
-	})
 	w.WriteHeader(http.StatusOK)
-	renderTemplate(w, ".html", map[string]interface{}{
-		"User_table": returnValue,
-		"Id": id,
-	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(returnValue)
 })
 
