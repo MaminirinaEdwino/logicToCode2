@@ -27,12 +27,19 @@ type ModelMeta struct {
 	Fields []ModelField
 }
 
+type WhereFilter struct {
+	Field    string
+	Operator string
+	Value    any
+	ParamIdx int
+}
+
 type QueryContext struct {
 	Model         ModelMeta
-	Operation     string   // SELECT, CREATE, UPDATE, DELETE
-	SelectFields  []string // Champs pour SELECT
-	WriteFields   []string // Champs pour INSERT / UPDATE
-	WhereParams   []string // Conditions WHERE
+	Operation     string        // SELECT, CREATE, UPDATE, DELETE
+	SelectFields  []string      // Champs pour SELECT
+	WriteFields   []string      // Champs pour INSERT / UPDATE
+	WhereFilters  []WhereFilter // Filtres dynamiques extrait du whereNode
 	StatusCodeVar string
 }
 
@@ -212,10 +219,9 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 		g.builder.WriteString(fmt.Sprintf("// Action SELECT sur : [%s]\n", strings.Join(selected, ", ")))
 
 	case "createNode":
-		// Extraction des champs à insérer (ex: hors clé primaire auto-incrémentée)
 		var writeFields []string
 		for _, f := range ctx.Model.Fields {
-			if f.Nom != "id" { // Ignore l'ID par défaut pour la création
+			if f.Nom != "id" {
 				writeFields = append(writeFields, f.Nom)
 			}
 		}
@@ -299,16 +305,83 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 
 	case "whereNode":
 		g.writeIndent()
-		g.builder.WriteString("// Clause d'exclusion / Filtre (WHERE)\n")
-		ctx.WhereParams = append(ctx.WhereParams, "id = $1")
+		g.builder.WriteString("// Clause d'exclusion / Filtre dynamique (WHERE)\n")
+
+		paramCounter := 1
+		if ctx.Operation == "UPDATE" {
+			paramCounter = len(ctx.WriteFields) + 1
+		}
+
+		for key, val := range node.Data {
+			if key == "name" || key == "type" || key == "label" {
+				continue
+			}
+
+			isModelField := false
+			for _, f := range ctx.Model.Fields {
+				if f.Nom == key {
+					isModelField = true
+					break
+				}
+			}
+
+			if isModelField {
+				op := "="
+				var filterVal any = val
+
+				if valMap, ok := val.(map[string]any); ok {
+					if customOp, ok := valMap["operator"].(string); ok {
+						op = customOp
+					}
+					if customVal, ok := valMap["value"]; ok {
+						filterVal = customVal
+					}
+				}
+
+				ctx.WhereFilters = append(ctx.WhereFilters, WhereFilter{
+					Field:    key,
+					Operator: op,
+					Value:    filterVal,
+					ParamIdx: paramCounter,
+				})
+				paramCounter++
+			}
+		}
+
+		// Fallback si aucun filtre spécifique n'est défini dans node.Data
+		if len(ctx.WhereFilters) == 0 {
+			ctx.WhereFilters = append(ctx.WhereFilters, WhereFilter{
+				Field:    "id",
+				Operator: "=",
+				Value:    "id",
+				ParamIdx: paramCounter,
+			})
+		}
 
 	case "returnNode":
 		g.writeIndent()
 		g.builder.WriteString("// Exécution SQL selon le mode d'opération\n")
 
-		whereClause := ""
-		if len(ctx.WhereParams) > 0 {
-			whereClause = " WHERE " + strings.Join(ctx.WhereParams, " AND ")
+		var whereClauses []string
+		var whereArgs []string
+
+		for _, filter := range ctx.WhereFilters {
+			whereClauses = append(whereClauses, fmt.Sprintf("%s %s $%d", filter.Field, filter.Operator, filter.ParamIdx))
+
+			if strVal, ok := filter.Value.(string); ok {
+				if strVal == "id" || strings.HasPrefix(strVal, "r.") {
+					whereArgs = append(whereArgs, strVal)
+				} else {
+					whereArgs = append(whereArgs, fmt.Sprintf("%q", strVal))
+				}
+			} else {
+				whereArgs = append(whereArgs, fmt.Sprintf("%v", filter.Value))
+			}
+		}
+
+		whereClauseSQL := ""
+		if len(whereClauses) > 0 {
+			whereClauseSQL = " WHERE " + strings.Join(whereClauses, " AND ")
 		}
 
 		switch ctx.Operation {
@@ -337,9 +410,11 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 			g.writeIndent()
 			g.builder.WriteString("var returnValue returnType\n")
 			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n", strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereClause))
+			g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n",
+				strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereClauseSQL))
 			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, id).Scan(%s)\n", strings.Join(scanPointers, ", ")))
+			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, %s).Scan(%s)\n",
+				strings.Join(whereArgs, ", "), strings.Join(scanPointers, ", ")))
 
 		case "CREATE":
 			var placeholders []string
@@ -363,18 +438,19 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 				setClauses = append(setClauses, fmt.Sprintf("%s = $%d", fName, i+1))
 				args = append(args, "input."+capitalize(fName))
 			}
-			args = append(args, "id")
+			args = append(args, whereArgs...)
+
 			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"UPDATE %s SET %s WHERE id = $%d\"\n",
-				ctx.Model.Name, strings.Join(setClauses, ", "), len(args)))
+			g.builder.WriteString(fmt.Sprintf("query := \"UPDATE %s SET %s%s\"\n",
+				ctx.Model.Name, strings.Join(setClauses, ", "), whereClauseSQL))
 			g.writeIndent()
 			g.builder.WriteString(fmt.Sprintf("_, err := db.Exec(query, %s)\n", strings.Join(args, ", ")))
 
 		case "DELETE":
 			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"DELETE FROM %s%s\"\n", ctx.Model.Name, whereClause))
+			g.builder.WriteString(fmt.Sprintf("query := \"DELETE FROM %s%s\"\n", ctx.Model.Name, whereClauseSQL))
 			g.writeIndent()
-			g.builder.WriteString("_, err := db.Exec(query, id)\n")
+			g.builder.WriteString(fmt.Sprintf("_, err := db.Exec(query, %s)\n", strings.Join(whereArgs, ", ")))
 		}
 
 		g.writeIndent()
@@ -422,19 +498,20 @@ func capitalize(s string) string {
 // --- Test d'exécution ---
 
 func main() {
-	// Exemple avec un createNode branché après le modelNode
 	nodesJSON := `[
 		{"id":"rootNode_1","type":"rootNode","data":{"name":"rootNode"}},
 		{"id":"modelNode_1","type":"modelNode","data":{"model":{"nom":"voiture","champs":[{"nom":"id","type":"int"},{"nom":"mark","type":"string"},{"nom":"number","type":"string"}]}}},
-		{"id":"createNode_1","type":"createNode","data":{"name":"createNode"}},
+		{"id":"selectNode_1","type":"selectNode","data":{"name":"selectNode","id":true,"mark":true,"number":false}},
+		{"id":"whereNode_1","type":"whereNode","data":{"name":"whereNode"}},
 		{"id":"returnNode_1","type":"returnNode","data":{"name":"returnNode"}},
 		{"id":"responseNode_1","type":"responseNode","data":{}}
 	]`
 	edgesJSON := `[
 		{"source":"rootNode_1","target":"modelNode_1","id":"e1"},
-		{"source":"modelNode_1","target":"createNode_1","id":"e2"},
-		{"source":"createNode_1","target":"returnNode_1","id":"e3"},
-		{"source":"returnNode_1","target":"responseNode_1","id":"e4"}
+		{"source":"modelNode_1","target":"selectNode_1","id":"e2"},
+		{"source":"selectNode_1","target":"whereNode_1","id":"e3"},
+		{"source":"whereNode_1","target":"returnNode_1","id":"e4"},
+		{"source":"returnNode_1","target":"responseNode_1","id":"e5"}
 	]`
 
 	roots, err := BuildTurboStackHierarchy(nodesJSON, edgesJSON)
@@ -443,7 +520,7 @@ func main() {
 	}
 
 	gen := &TurboStackGenerator{}
-	code := gen.GenerateRoute("POST /voitures", roots)
+	code := gen.GenerateRoute("GET /voitures/{id}", roots)
 
 	fmt.Println(code)
 }
