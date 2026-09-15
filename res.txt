@@ -2,28 +2,30 @@ mux.HandleFunc("GET /voitures/{id}", func(w http.ResponseWriter, r *http.Request
 	db := config.ConnectDB()
 	defer db.Close()
 
-	// Extraction des paramètres d'URL
+	// Extraction des paramètres par défaut
 	id := r.PathValue("id")
 
-	// --- Modèle cible : voiture ---
-	// Action SELECT sur : [id, mark]
-	// Clause d'exclusion / Filtre dynamique (WHERE)
-	// Exécution SQL selon le mode d'opération
+	// --- Modèle : voiture ---
+	// Action SELECT [id, mark, number]
+	// Clause Filtre (WHERE)
+	// Génération de la requête SQL
 	type returnType struct {
 		Id int `json:"id"`
 		Mark string `json:"mark"`
+		Number string `json:"number"`
 	}
 
 	var returnValue returnType
-	query := "SELECT id, mark FROM voiture WHERE id = $1"
-	err := db.QueryRow(query, id).Scan(&returnValue.Id, &returnValue.Mark)
+	query := "SELECT id, mark, number FROM voiture WHERE id = $1"
+	err := db.QueryRow(query, userId).Scan(&returnValue.Id, &returnValue.Mark, &returnValue.Number)
 	if err != nil {
-		http.Error(w, "Erreur lors de l'exécution de la requête", http.StatusInternalServerError)
+		http.Error(w, "Erreur lors de l'exécution SQL", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(returnValue)
+	var userId int = 1
 })
 
