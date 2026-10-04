@@ -1,23 +1,89 @@
-mux.HandleFunc("GET /voitures/{id}", func(w http.ResponseWriter, r *http.Request) {
-	db := config.ConnectDB()
-	defer db.Close()
-
-	// Point d'entrée de la route
-	userId := 1
-	// Exécution SELECT sur le modèle voiture
-	type RowResult struct {
-		Mark string `json:"mark"`
-		Number string `json:"number"`
+// --- CODE GÉNERÉ (SCÉNARIO COMPLEXE) ---
+func RegisterUserHandler(c *fiber.Ctx) error {
+	var body struct {
+		Username string `json:"username"` 
+		Age string `json:"age"` 
+		Email string `json:"email"` 
 	}
-	var result RowResult
-	query := "SELECT mark, number FROM voiture WHERE id = $1"
-	err := db.QueryRow(query, userId).Scan(&result.Mark, &result.Number)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
-})
+	email := body.Email
+	username := body.Username
+	age := body.Age
+	var defaultRole string = "user"
+	user := models.User{
+		Email: "",
+		Username: "",
+		Role: defaultRole,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	updates := make(map[string]interface{})
+	query := db.Model(&models.UserProfile{})
+	if err := query.Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	c.Status(201)
+	return c.JSON(fiber.Map{
+		"email": email,
+		"username": username,
+	})
+	user := models.User{
+		Email: "",
+		Username: "",
+		Role: defaultRole,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	updates := make(map[string]interface{})
+	query := db.Model(&models.UserProfile{})
+	if err := query.Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	c.Status(201)
+	return c.JSON(fiber.Map{
+		"email": email,
+		"username": username,
+	})
+	user := models.User{
+		Email: "",
+		Username: "",
+		Role: defaultRole,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	updates := make(map[string]interface{})
+	query := db.Model(&models.UserProfile{})
+	if err := query.Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	c.Status(201)
+	return c.JSON(fiber.Map{
+		"email": email,
+		"username": username,
+	})
+	user := models.User{
+		Email: "",
+		Username: "",
+		Role: defaultRole,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	updates := make(map[string]interface{})
+	query := db.Model(&models.UserProfile{})
+	if err := query.Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	c.Status(201)
+	return c.JSON(fiber.Map{
+		"email": email,
+		"username": username,
+	})
+	return c.SendStatus(fiber.StatusOK)
+}
 
