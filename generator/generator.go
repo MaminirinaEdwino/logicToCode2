@@ -121,6 +121,16 @@ func (cg *CodeGenerator) traverseNode(nodeID string) {
 		cg.generateStatusCode(&node)
 	case "ResponseNode":
 		cg.generateResponse(&node)
+	case "IfNode":
+		cg.generateIf(&node)
+	case "ElseIfNode":
+		cg.generateElseIf(&node)
+	case "ElseNode":
+		cg.generateElse(&node)
+	case "ForNode":
+		cg.generateFor(&node)
+	case "WhileNode":
+		cg.generateWhile(&node)
 	}
 
 	// Traverser les nœuds suivants connectés

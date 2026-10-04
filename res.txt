@@ -1,24 +1,27 @@
-// --- CODE GÉNÉRÉ (RECHERCHE PRODUITS HAS_MANY / FILTER) ---
-func GetProductsByCategory(w http.ResponseWriter, r *http.Request) {
-	category := r.URL.Query().Get("category")
-	if category == "" {
-		category = r.PathValue("category")
+// --- CODE GÉNÉRÉ (CONDITIONS ET BOUCLES) ---
+func ProcessUsersByRole(w http.ResponseWriter, r *http.Request) {
+	role := r.URL.Query().Get("role")
+	if role == "" {
+		role = r.PathValue("role")
 	}
-	limit := r.URL.Query().Get("limit")
-	if limit == "" {
-		limit = r.PathValue("limit")
-	}
-	var productList []models.Product
-	if err := db.Find(&productList).Error; err != nil {
+	if "" == "" {
+	var userList []models.User
+	if err := db.Find(&userList).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(200)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"productList": productList,
-	})
-	return
+	for _, item := range userList {
+	}
+	}
+	w.WriteHeader(403)
+	var userList []models.User
+	if err := db.Find(&userList).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, item := range userList {
+	}
+	w.WriteHeader(403)
 	w.WriteHeader(http.StatusOK)
 }
 

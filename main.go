@@ -9,22 +9,27 @@ import (
 )
 
 func main() {
-	// Exemple JSON : Recherche de produits par catégorie et limite
 	jsonGraph := `{
 		"node": [
 			{
-				"id": "node_category",
+				"id": "node_role",
 				"type": "RequestParamsNode",
 				"data": {
-					"requestParams": "category"
+					"requestParams": "role"
 				}
 			},
 			{
-				"id": "node_limit",
-				"type": "RequestParamsNode",
+				"id": "node_cmp",
+				"type": "EqualNode",
 				"data": {
-					"requestParams": "limit"
+					"left": "role",
+					"right": "\"admin\""
 				}
+			},
+			{
+				"id": "node_if",
+				"type": "IfNode",
+				"data": {}
 			},
 			{
 				"id": "node_select",
@@ -32,67 +37,53 @@ func main() {
 				"data": {
 					"selectedType": "ALL",
 					"model": {
-						"nom": "Product",
-						"champs": [
-							{"nom": "id", "type": "int"},
-							{"nom": "name", "type": "string"},
-							{"nom": "price", "type": "float"},
-							{"nom": "category", "type": "string"}
-						]
+						"nom": "User",
+						"champs": [{"nom": "id", "type": "int"}]
 					}
 				}
 			},
 			{
-				"id": "node_where",
-				"type": "WhereNode",
+				"id": "node_loop",
+				"type": "ForNode",
 				"data": {
-					"model": { "nom": "Product" },
-					"Product_check_category": true,
-					"Product_operator_category": "=",
-					"Product_check_param_type_category": false,
-					"Product_where_categorytarget": "category"
+					"collection": "userList"
 				}
 			},
 			{
-				"id": "node_status",
+				"id": "node_status_err",
 				"type": "StatusCodeNode",
 				"data": {
-					"status": 200
-				}
-			},
-			{
-				"id": "node_response",
-				"type": "ResponseNode",
-				"data": {
-					"response": ["productList"]
+					"status": 403
 				}
 			}
 		],
 		"edge": [
 			{
 				"id": "e1",
-				"source": "node_category",
-				"target": "node_limit"
+				"source": "node_role",
+				"target": "node_if"
 			},
 			{
-				"id": "e2",
-				"source": "node_limit",
-				"target": "node_select"
+				"id": "e-cmp",
+				"source": "node_cmp",
+				"target": "node_if"
 			},
 			{
-				"id": "e3",
+				"id": "e-true",
+				"source": "node_if",
+				"target": "node_select",
+				"handle": "true"
+			},
+			{
+				"id": "e-select-loop",
 				"source": "node_select",
-				"target": "node_where"
+				"target": "node_loop"
 			},
 			{
-				"id": "e4",
-				"source": "node_where",
-				"target": "node_status"
-			},
-			{
-				"id": "e5",
-				"source": "node_status",
-				"target": "node_response"
+				"id": "e-false",
+				"source": "node_if",
+				"target": "node_status_err",
+				"handle": "else"
 			}
 		]
 	}`
@@ -103,8 +94,8 @@ func main() {
 	}
 
 	gen := generator.NewCodeGenerator(graph)
-	code := gen.GenerateController("GetProductsByCategory")
+	code := gen.GenerateController("ProcessUsersByRole")
 
-	fmt.Println("// --- CODE GÉNÉRÉ (RECHERCHE PRODUITS HAS_MANY / FILTER) ---")
+	fmt.Println("// --- CODE GÉNÉRÉ (CONDITIONS ET BOUCLES) ---")
 	fmt.Println(code)
 }

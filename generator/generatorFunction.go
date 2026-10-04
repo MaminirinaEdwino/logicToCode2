@@ -367,3 +367,121 @@ func (cg *CodeGenerator) generateResponse(node *Node) {
 	cg.sb.WriteString("\t})\n")
 	cg.sb.WriteString("\treturn\n")
 }
+
+func (cg *CodeGenerator) generateIf(node *Node) {
+	condition := cg.buildCondition(node.ID)
+	cg.sb.WriteString(fmt.Sprintf("\tif %s {\n", condition))
+
+	// Exécution de la branche "true" (handle target : "then" ou "true")
+	cg.traverseBranch(node.ID, "true")
+	cg.sb.WriteString("\t}\n")
+
+	// Exécution de la branche "else" si connectée
+	cg.traverseBranch(node.ID, "else")
+}
+
+func (cg *CodeGenerator) generateElseIf(node *Node) {
+	condition := cg.buildCondition(node.ID)
+	cg.sb.WriteString(fmt.Sprintf("\telse if %s {\n", condition))
+
+	cg.traverseBranch(node.ID, "true")
+	cg.sb.WriteString("\t}\n")
+
+	cg.traverseBranch(node.ID, "else")
+}
+
+func (cg *CodeGenerator) generateElse(node *Node) {
+	cg.sb.WriteString("\telse {\n")
+	cg.traverseBranch(node.ID, "body")
+	cg.sb.WriteString("\t}\n")
+}
+
+// Reconstitution d'une condition d'évaluation
+func (cg *CodeGenerator) buildCondition(nodeID string) string {
+	// Recherche d'un nœud de comparaison (Equal, Different, Superior, Inferior) connecté
+	for _, edge := range cg.edges {
+		if edge.Target == nodeID {
+			sourceNode, exists := cg.nodes[edge.Source]
+			if !exists {
+				continue
+			}
+
+			left := cg.findSourceValueForHandle(sourceNode.ID, "left")
+			right := cg.findSourceValueForHandle(sourceNode.ID, "right")
+			if left == "" {
+				left = fmt.Sprintf("%v", sourceNode.Data["left"])
+			}
+			if right == "" {
+				right = fmt.Sprintf("%v", sourceNode.Data["right"])
+			}
+
+			switch sourceNode.Type {
+			case "EqualNode":
+				return fmt.Sprintf("%s == %s", left, right)
+			case "DifferentNode":
+				return fmt.Sprintf("%s != %s", left, right)
+			case "SuperiorNode":
+				return fmt.Sprintf("%s > %s", left, right)
+			case "InferiorNode":
+				return fmt.Sprintf("%s < %s", left, right)
+			}
+		}
+	}
+
+	// Condition par défaut si aucune connexion complexe
+	cond, ok := cg.nodes[nodeID].Data["condition"].(string)
+	if ok && cond != "" {
+		return cond
+	}
+	return "true"
+}
+
+// --- GESTION DES BOUCLES (FOR / WHILE) ---
+
+func (cg *CodeGenerator) generateFor(node *Node) {
+	varName, _ := node.Data["var"].(string)
+	if varName == "" {
+		varName = "i"
+	}
+	startVal := node.Data["start"]
+	if startVal == nil {
+		startVal = 0
+	}
+	endVal := node.Data["end"]
+	if endVal == nil {
+		endVal = 10
+	}
+	increment, _ := node.Data["increment"].(string)
+	if increment == "" {
+		increment = "i++"
+	}
+
+	// Si le nœud est un For Each (ex: itération sur un slice/array)
+	collection, isSlice := node.Data["collection"].(string)
+	if isSlice && collection != "" {
+		cg.sb.WriteString(fmt.Sprintf("\tfor _, item := range %s {\n", collection))
+	} else {
+		// Boucle for standard indexée
+		cg.sb.WriteString(fmt.Sprintf("\tfor %s := %v; %s < %v; %s {\n", varName, startVal, varName, endVal, increment))
+	}
+
+	// Corps de la boucle (handle "loop" ou "body")
+	cg.traverseBranch(node.ID, "loop")
+	cg.sb.WriteString("\t}\n")
+}
+
+func (cg *CodeGenerator) generateWhile(node *Node) {
+	condition := cg.buildCondition(node.ID)
+	cg.sb.WriteString(fmt.Sprintf("\tfor %s {\n", condition))
+
+	cg.traverseBranch(node.ID, "loop")
+	cg.sb.WriteString("\t}\n")
+}
+
+func (cg *CodeGenerator) traverseBranch(nodeID string, handleName string) {
+	for _, edge := range cg.edges {
+		if edge.Source == nodeID && (edge.Handle == handleName || handleName == "") {
+			cg.traverseNode(edge.Target)
+		}
+	}
+}
