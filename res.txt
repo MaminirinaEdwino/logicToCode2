@@ -1,96 +1,22 @@
-// --- CODE GÉNERÉ (SCÉNARIO COMPLEXE) ---
-func RegisterUserHandler(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Username string `json:"username"` 
-		Age string `json:"age"` 
-		Email string `json:"email"` 
+// --- CODE GÉNÉRÉ (RECHERCHE PRODUITS HAS_MANY / FILTER) ---
+func GetProductsByCategory(w http.ResponseWriter, r *http.Request) {
+	category := r.URL.Query().Get("category")
+	if category == "" {
+		category = r.PathValue("category")
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	limit := r.URL.Query().Get("limit")
+	if limit == "" {
+		limit = r.PathValue("limit")
+	}
+	var productList []models.Product
+	if err := db.Find(&productList).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	age := body.Age
-	email := body.Email
-	username := body.Username
-	var defaultRole string = "user"
-	user := models.User{
-		Email: "",
-		Username: "",
-		Role: defaultRole,
-	}
-	if err := db.Create(&user).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	updates := make(map[string]interface{})
-	query := db.Model(&models.UserProfile{})
-	if err := query.Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	w.WriteHeader(201)
+	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"email": email,
-		"username": username,
-	})
-	return
-	user := models.User{
-		Email: "",
-		Username: "",
-		Role: defaultRole,
-	}
-	if err := db.Create(&user).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	updates := make(map[string]interface{})
-	query := db.Model(&models.UserProfile{})
-	if err := query.Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	w.WriteHeader(201)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"email": email,
-		"username": username,
-	})
-	return
-	user := models.User{
-		Email: "",
-		Username: "",
-		Role: defaultRole,
-	}
-	if err := db.Create(&user).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	updates := make(map[string]interface{})
-	query := db.Model(&models.UserProfile{})
-	if err := query.Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	w.WriteHeader(201)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"email": email,
-		"username": username,
-	})
-	return
-	user := models.User{
-		Email: "",
-		Username: "",
-		Role: defaultRole,
-	}
-	if err := db.Create(&user).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	updates := make(map[string]interface{})
-	query := db.Model(&models.UserProfile{})
-	if err := query.Updates(updates).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-	w.WriteHeader(201)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"email": email,
-		"username": username,
+		"productList": productList,
 	})
 	return
 	w.WriteHeader(http.StatusOK)

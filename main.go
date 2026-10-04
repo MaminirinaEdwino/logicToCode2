@@ -9,129 +9,90 @@ import (
 )
 
 func main() {
-	// Exemple de graphe complexe : Inscription + Mettre à jour des paramètres
+	// Exemple JSON : Recherche de produits par catégorie et limite
 	jsonGraph := `{
 		"node": [
 			{
-				"id": "node_1",
-				"type": "BodyParamsNode",
+				"id": "node_category",
+				"type": "RequestParamsNode",
 				"data": {
-					"bodyParams": {
-						"email": "string",
-						"username": "string",
-						"age": "int"
-					}
+					"requestParams": "category"
 				}
 			},
 			{
-				"id": "node_2",
-				"type": "VarNode",
+				"id": "node_limit",
+				"type": "RequestParamsNode",
 				"data": {
-					"name": "defaultRole",
-					"type": "string",
-					"default value": "user"
+					"requestParams": "limit"
 				}
 			},
 			{
-				"id": "node_3",
-				"type": "InsertNode",
+				"id": "node_select",
+				"type": "SelectNode",
 				"data": {
+					"selectedType": "ALL",
 					"model": {
-						"nom": "User",
+						"nom": "Product",
 						"champs": [
-							{"nom": "email", "type": "string"},
-							{"nom": "username", "type": "string"},
-							{"nom": "role", "type": "string"}
+							{"nom": "id", "type": "int"},
+							{"nom": "name", "type": "string"},
+							{"nom": "price", "type": "float"},
+							{"nom": "category", "type": "string"}
 						]
 					}
 				}
 			},
 			{
-				"id": "node_4",
-				"type": "UpdateNode",
-				"data": {
-					"model": {
-						"nom": "UserProfile",
-						"champs": [
-							{"nom": "is_active", "type": "bool"}
-						]
-					}
-				}
-			},
-			{
-				"id": "node_5",
+				"id": "node_where",
 				"type": "WhereNode",
 				"data": {
-					"model": { "nom": "UserProfile" },
-					"UserProfile_check_email": true,
-					"UserProfile_operator_email": "=",
-					"UserProfile_check_param_type_email": false,
-					"UserProfile_where_emailtarget": "email"
+					"model": { "nom": "Product" },
+					"Product_check_category": true,
+					"Product_operator_category": "=",
+					"Product_check_param_type_category": false,
+					"Product_where_categorytarget": "category"
 				}
 			},
 			{
-				"id": "node_6",
+				"id": "node_status",
 				"type": "StatusCodeNode",
 				"data": {
-					"status": 201
+					"status": 200
 				}
 			},
 			{
-				"id": "node_7",
+				"id": "node_response",
 				"type": "ResponseNode",
 				"data": {
-					"response": ["email", "username"]
+					"response": ["productList"]
 				}
 			}
 		],
 		"edge": [
 			{
-				"id": "e1-2",
-				"source": "node_1",
-				"target": "node_2"
+				"id": "e1",
+				"source": "node_category",
+				"target": "node_limit"
 			},
 			{
-				"id": "e2-3",
-				"source": "node_2",
-				"target": "node_3"
+				"id": "e2",
+				"source": "node_limit",
+				"target": "node_select"
 			},
 			{
-				"id": "e3-4",
-				"source": "node_3",
-				"target": "node_4"
+				"id": "e3",
+				"source": "node_select",
+				"target": "node_where"
 			},
 			{
-				"id": "e4-5",
-				"source": "node_4",
-				"target": "node_5"
+				"id": "e4",
+				"source": "node_where",
+				"target": "node_status"
 			},
 			{
-				"id": "e5-6",
-				"source": "node_5",
-				"target": "node_6"
-			},
-			{
-				"id": "e6-7",
-				"source": "node_6",
-				"target": "node_7"
-			},
-			{
-				"id": "e-bind-email",
-				"source": "node_1",
-				"target": "node_3",
-				"handle": "insert-value-email"
-			},
-			{
-				"id": "e-bind-username",
-				"source": "node_1",
-				"target": "node_3",
-				"handle": "insert-value-username"
-			},
-			{
-				"id": "e-bind-role",
-				"source": "node_2",
-				"target": "node_3",
-				"handle": "insert-value-role"
+				"id": "e5",
+				"source": "node_status",
+				"target": "node_response"
 			}
 		]
 	}`
@@ -142,8 +103,8 @@ func main() {
 	}
 
 	gen := generator.NewCodeGenerator(graph)
-	code := gen.GenerateController("RegisterUserHandler")
+	code := gen.GenerateController("GetProductsByCategory")
 
-	fmt.Println("// --- CODE GÉNERÉ (SCÉNARIO COMPLEXE) ---")
+	fmt.Println("// --- CODE GÉNÉRÉ (RECHERCHE PRODUITS HAS_MANY / FILTER) ---")
 	fmt.Println(code)
 }

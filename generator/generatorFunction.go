@@ -15,8 +15,7 @@ func (cg *CodeGenerator) generateInsert(node *Node) {
 	for _, f := range fields {
 		fieldMap := f.(map[string]interface{})
 		fieldName := fieldMap["nom"].(string)
-		
-		// Vérification si un handler insert-value-{field.nom} est lié
+
 		handleKey := fmt.Sprintf("insert-value-%s", fieldName)
 		val := cg.findSourceValueForHandle(node.ID, handleKey)
 		if val != "" {
@@ -25,7 +24,8 @@ func (cg *CodeGenerator) generateInsert(node *Node) {
 	}
 	cg.sb.WriteString("\t}\n")
 	cg.sb.WriteString(fmt.Sprintf("\tif err := db.Create(&%s).Error; err != nil {\n", varStruct))
-	cg.sb.WriteString("\t\treturn c.Status(500).JSON(fiber.Map{\"error\": err.Error()})\n")
+	cg.sb.WriteString("\t\thttp.Error(w, err.Error(), http.StatusInternalServerError)\n")
+	cg.sb.WriteString("\t\treturn\n")
 	cg.sb.WriteString("\t}\n")
 }
 
@@ -37,14 +37,76 @@ func (cg *CodeGenerator) generateSelect(node *Node) {
 	switch selectType {
 	case "ALL":
 		cg.sb.WriteString(fmt.Sprintf("\tvar %sList []models.%s\n", varStruct, modelName))
-		cg.sb.WriteString(fmt.Sprintf("\tdb.Find(&%sList)\n", varStruct))
+		cg.sb.WriteString(fmt.Sprintf("\tif err := db.Find(&%sList).Error; err != nil {\n", varStruct))
+		cg.sb.WriteString("\t\thttp.Error(w, err.Error(), http.StatusInternalServerError)\n")
+		cg.sb.WriteString("\t\treturn\n")
+		cg.sb.WriteString("\t}\n")
 	case "ONE":
 		cg.sb.WriteString(fmt.Sprintf("\tvar %s models.%s\n", varStruct, modelName))
-		cg.sb.WriteString(fmt.Sprintf("\tdb.First(&%s)\n", varStruct))
+		cg.sb.WriteString(fmt.Sprintf("\tif err := db.First(&%s).Error; err != nil {\n", varStruct))
+		cg.sb.WriteString("\t\thttp.Error(w, err.Error(), http.StatusNotFound)\n")
+		cg.sb.WriteString("\t\treturn\n")
+		cg.sb.WriteString("\t}\n")
 	case "BY":
 		cg.sb.WriteString(fmt.Sprintf("\tvar %sList []models.%s\n", varStruct, modelName))
-		// La condition WHERE sera ajoutée lors de la traversée du WhereNode attaché
+		// La condition WHERE est chaînée via la traversée du WhereNode connecté
 	}
+}
+
+func (cg *CodeGenerator) generateUpdate(node *Node) {
+	modelName := getNestedString(node.Data, "model", "nom")
+	fields, _ := node.Data["model"].(map[string]interface{})["champs"].([]interface{})
+
+	cg.sb.WriteString("\tupdates := make(map[string]interface{})\n")
+
+	for _, f := range fields {
+		fieldMap := f.(map[string]interface{})
+		fieldName := fieldMap["nom"].(string)
+
+		handleKey := fmt.Sprintf("insert-value-%s", fieldName)
+		val := cg.findSourceValueForHandle(node.ID, handleKey)
+		if val != "" && val != "\"\"" {
+			cg.sb.WriteString(fmt.Sprintf("\tupdates[\"%s\"] = %s\n", fieldName, val))
+		}
+	}
+
+	cg.sb.WriteString(fmt.Sprintf("\tquery := db.Model(&models.%s{})\n", modelName))
+
+	// Raccordement avec le WhereNode rattaché
+	for _, edge := range cg.edges {
+		if edge.Source == node.ID {
+			targetNode, exists := cg.nodes[edge.Target]
+			if exists && targetNode.Type == "WhereNode" {
+				cg.generateWhere(&targetNode)
+			}
+		}
+	}
+
+	cg.sb.WriteString("\tif err := query.Updates(updates).Error; err != nil {\n")
+	cg.sb.WriteString("\t\thttp.Error(w, err.Error(), http.StatusInternalServerError)\n")
+	cg.sb.WriteString("\t\treturn\n")
+	cg.sb.WriteString("\t}\n")
+}
+
+func (cg *CodeGenerator) generateDelete(node *Node) {
+	modelName := getNestedString(node.Data, "model", "nom")
+
+	cg.sb.WriteString(fmt.Sprintf("\tquery := db.Model(&models.%s{})\n", modelName))
+
+	// Raccordement avec le WhereNode rattaché
+	for _, edge := range cg.edges {
+		if edge.Source == node.ID {
+			targetNode, exists := cg.nodes[edge.Target]
+			if exists && targetNode.Type == "WhereNode" {
+				cg.generateWhere(&targetNode)
+			}
+		}
+	}
+
+	cg.sb.WriteString(fmt.Sprintf("\tif err := query.Delete(&models.%s{}).Error; err != nil {\n", modelName))
+	cg.sb.WriteString("\t\thttp.Error(w, err.Error(), http.StatusInternalServerError)\n")
+	cg.sb.WriteString("\t\treturn\n")
+	cg.sb.WriteString("\t}\n")
 }
 
 func (cg *CodeGenerator) generateWhere(node *Node) {
@@ -176,60 +238,60 @@ func (cg *CodeGenerator) generateVar(node *Node) {
 // 	}
 // }
 
-func (cg *CodeGenerator) generateUpdate(node *Node) {
-	modelName := getNestedString(node.Data, "model", "nom")
-	fields, _ := node.Data["model"].(map[string]interface{})["champs"].([]interface{})
+// func (cg *CodeGenerator) generateUpdate(node *Node) {
+// 	modelName := getNestedString(node.Data, "model", "nom")
+// 	fields, _ := node.Data["model"].(map[string]interface{})["champs"].([]interface{})
 
-	// varStruct := strings.ToLower(modelName)
-	cg.sb.WriteString(fmt.Sprintf("\tupdates := make(map[string]interface{})\n"))
+// 	// varStruct := strings.ToLower(modelName)
+// 	cg.sb.WriteString(fmt.Sprintf("\tupdates := make(map[string]interface{})\n"))
 
-	for _, f := range fields {
-		fieldMap := f.(map[string]interface{})
-		fieldName := fieldMap["nom"].(string)
+// 	for _, f := range fields {
+// 		fieldMap := f.(map[string]interface{})
+// 		fieldName := fieldMap["nom"].(string)
 
-		handleKey := fmt.Sprintf("insert-value-%s", fieldName)
-		val := cg.findSourceValueForHandle(node.ID, handleKey)
-		if val != "" && val != "\"\"" {
-			cg.sb.WriteString(fmt.Sprintf("\tupdates[\"%s\"] = %s\n", fieldName, val))
-		}
-	}
+// 		handleKey := fmt.Sprintf("insert-value-%s", fieldName)
+// 		val := cg.findSourceValueForHandle(node.ID, handleKey)
+// 		if val != "" && val != "\"\"" {
+// 			cg.sb.WriteString(fmt.Sprintf("\tupdates[\"%s\"] = %s\n", fieldName, val))
+// 		}
+// 	}
 
-	cg.sb.WriteString("\tquery := db.Model(&models." + modelName + "{})\n")
+// 	cg.sb.WriteString("\tquery := db.Model(&models." + modelName + "{})\n")
 
-	// La condition WHERE sera appliquée si un WhereNode est rattaché
-	for _, edge := range cg.edges {
-		if edge.Source == node.ID {
-			targetNode, exists := cg.nodes[edge.Target]
-			if exists && targetNode.Type == "WhereNode" {
-				cg.generateWhere(&targetNode)
-			}
-		}
-	}
+// 	// La condition WHERE sera appliquée si un WhereNode est rattaché
+// 	for _, edge := range cg.edges {
+// 		if edge.Source == node.ID {
+// 			targetNode, exists := cg.nodes[edge.Target]
+// 			if exists && targetNode.Type == "WhereNode" {
+// 				cg.generateWhere(&targetNode)
+// 			}
+// 		}
+// 	}
 
-	cg.sb.WriteString(fmt.Sprintf("\tif err := query.Updates(updates).Error; err != nil {\n"))
-	cg.sb.WriteString("\t\treturn c.Status(500).JSON(fiber.Map{\"error\": err.Error()})\n")
-	cg.sb.WriteString("\t}\n")
-}
+// 	cg.sb.WriteString(fmt.Sprintf("\tif err := query.Updates(updates).Error; err != nil {\n"))
+// 	cg.sb.WriteString("\t\treturn c.Status(500).JSON(fiber.Map{\"error\": err.Error()})\n")
+// 	cg.sb.WriteString("\t}\n")
+// }
 
-func (cg *CodeGenerator) generateDelete(node *Node) {
-	modelName := getNestedString(node.Data, "model", "nom")
+// func (cg *CodeGenerator) generateDelete(node *Node) {
+// 	modelName := getNestedString(node.Data, "model", "nom")
 
-	cg.sb.WriteString(fmt.Sprintf("\tquery := db.Model(&models.%s{})\n", modelName))
+// 	cg.sb.WriteString(fmt.Sprintf("\tquery := db.Model(&models.%s{})\n", modelName))
 
-	// Application des clauses WHERE si un WhereNode est connecté
-	for _, edge := range cg.edges {
-		if edge.Source == node.ID {
-			targetNode, exists := cg.nodes[edge.Target]
-			if exists && targetNode.Type == "WhereNode" {
-				cg.generateWhere(&targetNode)
-			}
-		}
-	}
+// 	// Application des clauses WHERE si un WhereNode est connecté
+// 	for _, edge := range cg.edges {
+// 		if edge.Source == node.ID {
+// 			targetNode, exists := cg.nodes[edge.Target]
+// 			if exists && targetNode.Type == "WhereNode" {
+// 				cg.generateWhere(&targetNode)
+// 			}
+// 		}
+// 	}
 
-	cg.sb.WriteString(fmt.Sprintf("\tif err := query.Delete(&models.%s{}).Error; err != nil {\n", modelName))
-	cg.sb.WriteString("\t\treturn c.Status(500).JSON(fiber.Map{\"error\": err.Error()})\n")
-	cg.sb.WriteString("\t}\n")
-}
+// 	cg.sb.WriteString(fmt.Sprintf("\tif err := query.Delete(&models.%s{}).Error; err != nil {\n", modelName))
+// 	cg.sb.WriteString("\t\treturn c.Status(500).JSON(fiber.Map{\"error\": err.Error()})\n")
+// 	cg.sb.WriteString("\t}\n")
+// }
 
 func (cg *CodeGenerator) GenerateController(handlerName string) string {
 	cg.sb.WriteString(fmt.Sprintf("func %s(w http.ResponseWriter, r *http.Request) {\n", handlerName))
