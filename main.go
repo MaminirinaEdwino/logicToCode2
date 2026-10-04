@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// --- 1. Structures de données ---
+// --- 1. Modèles de Données pour le Graph ---
 
 type DynamicNode struct {
 	ID       string         `json:"id"`
@@ -25,8 +25,8 @@ type Edge struct {
 }
 
 type ModelField struct {
-	Nom  string
-	Type string
+	Nom  string `json:"nom"`
+	Type string `json:"type"`
 }
 
 type ModelMeta struct {
@@ -37,35 +37,30 @@ type ModelMeta struct {
 type WhereFilter struct {
 	Field       string
 	Operator    string
-	BoundSource string // ex: "var_userId" ou "r.PathValue(\"id\")"
+	BoundSource string
 	ParamIdx    int
 }
 
-type QueryContext struct {
-	Model         ModelMeta
-	Operation     string                 // SELECT, INSERT, UPDATE, DELETE
-	SelectFields  []string               // Champs pour SELECT
-	BoundInputs   map[string]string      // Mapping champ -> variable (ex: "mark" -> "body.Mark")
-	WhereFilters  []WhereFilter          // Filtres issus de bindings ou de data
-	StatusCodeVar string                 // Variable du code de statut HTTP
+// Contexte véhiculé le long de la branche
+type ExecutionContext struct {
+	Model        ModelMeta
+	Operation    string            // "GET" (SELECT), "CREATE" (INSERT), "UPDATE", "DELETE"
+	SelectFields []string          // Champs choisis si Operation == "GET"
+	WhereFilters []WhereFilter     // Filtres accumulés par les whereNodes
+	BoundInputs  map[string]string // Champs -> sources de données (body / var)
 }
 
-// --- 2. Construction de la hiérarchie et résolution des Bindings ---
+// --- 2. Parser du Graph JSON ---
 
-type LogicPayload struct {
-	Edge string `json:"edge"`
-	Node string `json:"node"`
-}
-
-func ParseTurboStackGraph(nodesRawJSON string, edgesRawJSON string) ([]*DynamicNode, []Edge, map[string]*DynamicNode, error) {
+func ParseGraph(nodesRaw string, edgesRaw string) ([]*DynamicNode, []Edge, map[string]*DynamicNode, error) {
 	var rawNodes []map[string]any
-	if err := json.Unmarshal([]byte(nodesRawJSON), &rawNodes); err != nil {
-		return nil, nil, nil, fmt.Errorf("erreur unmarshal nodes: %w", err)
+	if err := json.Unmarshal([]byte(nodesRaw), &rawNodes); err != nil {
+		return nil, nil, nil, fmt.Errorf("erreur nodes json: %w", err)
 	}
 
 	var edges []Edge
-	if err := json.Unmarshal([]byte(edgesRawJSON), &edges); err != nil {
-		return nil, nil, nil, fmt.Errorf("erreur unmarshal edges: %w", err)
+	if err := json.Unmarshal([]byte(edgesRaw), &edges); err != nil {
+		return nil, nil, nil, fmt.Errorf("erreur edges json: %w", err)
 	}
 
 	nodeMap := make(map[string]*DynamicNode)
@@ -74,11 +69,7 @@ func ParseTurboStackGraph(nodesRawJSON string, edgesRawJSON string) ([]*DynamicN
 	for _, n := range rawNodes {
 		id, _ := n["id"].(string)
 		nodeType, _ := n["type"].(string)
-
-		dataMap := make(map[string]any)
-		if d, ok := n["data"].(map[string]any); ok {
-			dataMap = d
-		}
+		dataMap, _ := n["data"].(map[string]any)
 
 		nodeMap[id] = &DynamicNode{
 			ID:       id,
@@ -89,17 +80,14 @@ func ParseTurboStackGraph(nodesRawJSON string, edgesRawJSON string) ([]*DynamicN
 		inDegree[id] = 0
 	}
 
-	// Définition des flux principaux (ignore les connexions de Data Binding pour la hiérarchie pure)
+	// Lier uniquement les flux hiérarchiques de contrôle (ignorer les handles isolés de data-binding)
 	for _, edge := range edges {
-		parent, parentOk := nodeMap[edge.Source]
-		child, childOk := nodeMap[edge.Target]
+		parent, pOk := nodeMap[edge.Source]
+		child, cOk := nodeMap[edge.Target]
 
-		if parentOk && childOk {
-			// On filtre les edges de données (data binding) pour ne garder que le flux de contrôle
-			if edge.TargetHandle == "response_status" || 
-			   strings.HasPrefix(edge.TargetHandle, "insert-value-") || 
-			   strings.HasPrefix(edge.TargetHandle, "voiture_where_") ||
-			   strings.HasSuffix(edge.TargetHandle, "_handle") {
+		if pOk && cOk {
+			// Filtre des liaisons de data binding pures (non-structurelles)
+			if strings.Contains(edge.TargetHandle, "_where_") || strings.HasPrefix(edge.TargetHandle, "insert-value-") {
 				continue
 			}
 			parent.Children = append(parent.Children, child)
@@ -117,28 +105,28 @@ func ParseTurboStackGraph(nodesRawJSON string, edgesRawJSON string) ([]*DynamicN
 	return roots, edges, nodeMap, nil
 }
 
-// --- 3. Générateur de Code ---
+// --- 3. Générateur de Code Go ---
 
-type TurboStackGenerator struct {
+type CodeGenerator struct {
 	builder strings.Builder
 	indent  int
 	edges   []Edge
 	nodeMap map[string]*DynamicNode
 }
 
-func (g *TurboStackGenerator) writeIndent() {
+func (g *CodeGenerator) writeIndent() {
 	for i := 0; i < g.indent; i++ {
 		g.builder.WriteString("\t")
 	}
 }
 
-func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*DynamicNode, edges []Edge, nodeMap map[string]*DynamicNode) string {
+func (g *CodeGenerator) GenerateHandler(route string, roots []*DynamicNode, edges []Edge, nodeMap map[string]*DynamicNode) string {
 	g.builder.Reset()
 	g.indent = 0
 	g.edges = edges
 	g.nodeMap = nodeMap
 
-	g.builder.WriteString(fmt.Sprintf("mux.HandleFunc(%q, func(w http.ResponseWriter, r *http.Request) {\n", routePattern))
+	g.builder.WriteString(fmt.Sprintf("mux.HandleFunc(%q, func(w http.ResponseWriter, r *http.Request) {\n", route))
 	g.indent++
 
 	g.writeIndent()
@@ -146,13 +134,9 @@ func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*Dynami
 	g.writeIndent()
 	g.builder.WriteString("defer db.Close()\n\n")
 
-	ctx := &QueryContext{
-		StatusCodeVar: "http.StatusOK",
-		BoundInputs:   make(map[string]string),
-	}
-
 	for _, root := range roots {
-		g.traverseAndGenerate(root, ctx)
+		ctx := &ExecutionContext{BoundInputs: make(map[string]string)}
+		g.traverse(root, ctx)
 	}
 
 	g.indent--
@@ -162,14 +146,12 @@ func (g *TurboStackGenerator) GenerateRoute(routePattern string, roots []*Dynami
 	return g.builder.String()
 }
 
-func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryContext) {
+func (g *CodeGenerator) traverse(node *DynamicNode, ctx *ExecutionContext) {
 	switch node.Type {
 
 	case "rootNode":
 		g.writeIndent()
-		g.builder.WriteString("// Extraction des paramètres par défaut\n")
-		g.writeIndent()
-		g.builder.WriteString("id := r.PathValue(\"id\")\n\n")
+		g.builder.WriteString("// Point d'entrée de la route\n")
 
 	case "varNode":
 		varName, _ := node.Data["name"].(string)
@@ -177,363 +159,220 @@ func (g *TurboStackGenerator) traverseAndGenerate(node *DynamicNode, ctx *QueryC
 		defaultVal, _ := node.Data["default value"].(string)
 		if varType == "int" {
 			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("var %s int = %s\n", varName, defaultVal))
+			g.builder.WriteString(fmt.Sprintf("%s := %s\n", varName, defaultVal))
 		} else {
 			g.writeIndent()
 			g.builder.WriteString(fmt.Sprintf("%s := %q\n", varName, defaultVal))
 		}
 
 	case "modelNode":
-		// Extraction du modèle
+		// 1. LE MODEL NODE : Recueille UNIQUEMENT les infos du modèle (Nom + Champs)
 		if m, ok := node.Data["model"].(map[string]any); ok {
 			if nom, ok := m["nom"].(string); ok {
 				ctx.Model.Name = nom
 			}
-			ctx.Model.Fields = []ModelField{}
+			ctx.Model.Fields = nil
 			if champs, ok := m["champs"].([]any); ok {
 				for _, c := range champs {
-					if champMap, ok := c.(map[string]any); ok {
-						fNom, _ := champMap["nom"].(string)
-						fType, _ := champMap["type"].(string)
+					if cMap, ok := c.(map[string]any); ok {
+						fNom, _ := cMap["nom"].(string)
+						fType, _ := cMap["type"].(string)
 						ctx.Model.Fields = append(ctx.Model.Fields, ModelField{Nom: fNom, Type: fType})
 					}
 				}
 			}
 		}
+		// Aucun code SQL généré ici.
 
-		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("// --- Modèle : %s ---\n", ctx.Model.Name))
+	case "selectNode", "getNode":
+		// 2. ENFANT GET (SELECT) : Hérite des champs et sélectionne les attributs du node.Data
+		ctx.Operation = "GET"
+		ctx.SelectFields = nil
 
-	case "selectNode":
-		ctx.Operation = "SELECT"
-		var selected []string
-
-		// Inspection des attributs booléens dans node.Data
+		// On extrait du data les clés correspondant aux champs du modèle valant true
 		for _, field := range ctx.Model.Fields {
-			if val, exists := node.Data[field.Nom]; exists {
-				if isSelected, ok := val.(bool); ok && isSelected {
-					selected = append(selected, field.Nom)
-				}
+			if isSelected, ok := node.Data[field.Nom].(bool); ok && isSelected {
+				ctx.SelectFields = append(ctx.SelectFields, field.Nom)
 			}
 		}
-		if len(selected) == 0 {
+
+		// Si aucun champ spécifié explicitement, on sélectionne tout par défaut
+		if len(ctx.SelectFields) == 0 {
 			for _, field := range ctx.Model.Fields {
-				selected = append(selected, field.Nom)
-			}
-		}
-		ctx.SelectFields = selected
-		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("// Action SELECT [%s]\n", strings.Join(selected, ", ")))
-
-	case "insertNode":
-		ctx.Operation = "INSERT"
-		ctx.StatusCodeVar = "http.StatusCreated"
-		g.writeIndent()
-		g.builder.WriteString("// Action INSERT\n")
-
-		// Résolution des bindings d'entrée via les edges (bodyParamsNode -> insertNode)
-		for _, e := range g.edges {
-			if e.Target == node.ID && strings.HasPrefix(e.TargetHandle, "insert-value-") {
-				fieldName := strings.TrimPrefix(e.TargetHandle, "insert-value-")
-				if sourceNode, ok := g.nodeMap[e.Source]; ok && sourceNode.Type == "bodyParamsNode" {
-					if bp, ok := sourceNode.Data["bodyParams"].(map[string]any); ok {
-						if fieldMap, ok := bp["field"].(map[string]any); ok {
-							fName, _ := fieldMap["nom"].(string)
-							ctx.BoundInputs[fieldName] = fmt.Sprintf("reqBody.%s", capitalize(fName))
-						}
-					}
-				}
+				ctx.SelectFields = append(ctx.SelectFields, field.Nom)
 			}
 		}
 
-		// Génération de la structure de body
-		g.writeIndent()
-		g.builder.WriteString("type insertPayload struct {\n")
-		g.indent++
-		for _, f := range ctx.Model.Fields {
-			if f.Nom != "id" {
-				g.writeIndent()
-				g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capitalize(f.Nom), f.Type, f.Nom))
-			}
-		}
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n")
-		g.writeIndent()
-		g.builder.WriteString("var reqBody insertPayload\n")
-		g.writeIndent()
-		g.builder.WriteString("if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {\n")
-		g.indent++
-		g.writeIndent()
-		g.builder.WriteString("http.Error(w, \"Payload invalide\", http.StatusBadRequest)\n")
-		g.writeIndent()
-		g.builder.WriteString("return\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n\n")
+	case "createNode", "insertNode":
+		// 2. ENFANT CREATE (INSERT)
+		ctx.Operation = "CREATE"
 
 	case "updateNode":
+		// 2. ENFANT UPDATE
 		ctx.Operation = "UPDATE"
-		g.writeIndent()
-		g.builder.WriteString("// Action UPDATE\n")
-
-		// Data Binding pour updateNode
-		for _, e := range g.edges {
-			if e.Target == node.ID && strings.HasPrefix(e.TargetHandle, "insert-value-") {
-				fieldName := strings.TrimPrefix(e.TargetHandle, "insert-value-")
-				if sourceNode, ok := g.nodeMap[e.Source]; ok && sourceNode.Type == "bodyParamsNode" {
-					if bp, ok := sourceNode.Data["bodyParams"].(map[string]any); ok {
-						if fieldMap, ok := bp["field"].(map[string]any); ok {
-							fName, _ := fieldMap["nom"].(string)
-							ctx.BoundInputs[fieldName] = fmt.Sprintf("reqBody.%s", capitalize(fName))
-						}
-					}
-				}
-			}
-		}
-
-		g.writeIndent()
-		g.builder.WriteString("type updatePayload struct {\n")
-		g.indent++
-		for _, f := range ctx.Model.Fields {
-			if f.Nom != "id" {
-				g.writeIndent()
-				g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capitalize(f.Nom), f.Type, f.Nom))
-			}
-		}
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n")
-		g.writeIndent()
-		g.builder.WriteString("var reqBody updatePayload\n")
-		g.writeIndent()
-		g.builder.WriteString("if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {\n")
-		g.indent++
-		g.writeIndent()
-		g.builder.WriteString("http.Error(w, \"Payload invalide\", http.StatusBadRequest)\n")
-		g.writeIndent()
-		g.builder.WriteString("return\n")
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n\n")
 
 	case "deleteNode":
+		// 2. ENFANT DELETE
 		ctx.Operation = "DELETE"
-		g.writeIndent()
-		g.builder.WriteString("// Action DELETE\n")
 
 	case "whereNode":
-		g.writeIndent()
-		g.builder.WriteString("// Clause Filtre (WHERE)\n")
-		paramCounter := 1
+		// 3. ENFANT WHERE : Spécifie les filtres pour les champs du modèle parent
+		paramIdx := len(ctx.WhereFilters) + 1
 
-		// Vérifier si un varNode ou un autre nœud est connecté au handle du whereNode (ex: voiture_where_idtarget)
+		// Vérification des Data-Bindings reliés à ce whereNode via les edges
+		boundFromEdge := false
 		for _, e := range g.edges {
 			if e.Target == node.ID && strings.Contains(e.TargetHandle, "_where_") {
+				// ex: handle = "voiture_where_idtarget" -> champ "id"
 				parts := strings.Split(e.TargetHandle, "_where_")
 				if len(parts) == 2 {
-					fieldName := strings.TrimSuffix(parts[1], "target")
-					if sourceNode, ok := g.nodeMap[e.Source]; ok && sourceNode.Type == "varNode" {
-						varName, _ := sourceNode.Data["name"].(string)
+					fieldNom := strings.TrimSuffix(parts[1], "target")
+					if srcNode, ok := g.nodeMap[e.Source]; ok && srcNode.Type == "varNode" {
+						vName, _ := srcNode.Data["name"].(string)
 						ctx.WhereFilters = append(ctx.WhereFilters, WhereFilter{
-							Field:       fieldName,
+							Field:       fieldNom,
 							Operator:    "=",
-							BoundSource: varName,
-							ParamIdx:    paramCounter,
+							BoundSource: vName,
+							ParamIdx:    paramIdx,
 						})
-						paramCounter++
+						boundFromEdge = true
 					}
 				}
 			}
 		}
 
-		// Fallback sur le path parameter ou les attributs du data du node
-		if len(ctx.WhereFilters) == 0 {
-			ctx.WhereFilters = append(ctx.WhereFilters, WhereFilter{
-				Field:       "id",
-				Operator:    "=",
-				BoundSource: "id",
-				ParamIdx:    paramCounter,
-			})
+		// Fallback sur les valeurs lues directement dans data s'il n'y a pas d'edge
+		if !boundFromEdge {
+			for _, field := range ctx.Model.Fields {
+				checkKey := ctx.Model.NomCheckKey(field.Nom)
+				if isChecked, ok := node.Data[checkKey].(bool); ok && isChecked {
+					opKey := ctx.Model.NomOpKey(field.Nom)
+					operator, _ := node.Data[opKey].(string)
+					if operator == "" {
+						operator = "="
+					}
+					valKey := ctx.Model.NomValKey(field.Nom)
+					val, _ := node.Data[valKey].(string)
+
+					ctx.WhereFilters = append(ctx.WhereFilters, WhereFilter{
+						Field:       field.Nom,
+						Operator:    operator,
+						BoundSource: fmt.Sprintf("%q", val),
+						ParamIdx:    paramIdx,
+					})
+					paramIdx++
+				}
+			}
 		}
 
 	case "returnNode":
+		// Génération de la requête SQL finale basée sur tout le contexte accumulé (Model + Opération + Where)
+		g.generateSQLQuery(ctx)
+
+	case "responseNode":
 		g.writeIndent()
-		g.builder.WriteString("// Génération de la requête SQL\n")
-
-		var whereClauses []string
-		var whereArgs []string
-
-		for _, filter := range ctx.WhereFilters {
-			whereClauses = append(whereClauses, fmt.Sprintf("%s %s $%d", filter.Field, filter.Operator, filter.ParamIdx))
-			whereArgs = append(whereArgs, filter.BoundSource)
+		g.builder.WriteString("w.Header().Set(\"Content-Type\", \"application/json\")\n")
+		g.writeIndent()
+		if ctx.Operation == "GET" {
+			g.builder.WriteString("json.NewEncoder(w).Encode(result)\n")
+		} else {
+			g.builder.WriteString("json.NewEncoder(w).Encode(map[string]string{\"status\": \"ok\"})\n")
 		}
+	}
 
-		whereClauseSQL := ""
-		if len(whereClauses) > 0 {
-			whereClauseSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	// Traversée récursive des enfants de la branche
+	for _, child := range node.Children {
+		g.traverse(child, ctx)
+	}
+}
+
+// Helpers pour reconstruire les clés de data du WhereNode
+func (m *ModelMeta) NomCheckKey(field string) string { return m.Name + "_check_" + field }
+func (m *ModelMeta) NomOpKey(field string) string    { return m.Name + "_operator_" + field }
+func (m *ModelMeta) NomValKey(field string) string   { return m.Name + "_where_" + field }
+
+func (g *CodeGenerator) generateSQLQuery(ctx *ExecutionContext) {
+	var whereClauses []string
+	var args []string
+
+	for _, w := range ctx.WhereFilters {
+		whereClauses = append(whereClauses, fmt.Sprintf("%s %s $%d", w.Field, w.Operator, w.ParamIdx))
+		args = append(args, w.BoundSource)
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	switch ctx.Operation {
+	case "GET":
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("// Exécution SELECT sur le modèle %s\n", ctx.Model.Name))
+		g.writeIndent()
+		g.builder.WriteString("type RowResult struct {\n")
+		g.indent++
+		var scanTargets []string
+		for _, fName := range ctx.SelectFields {
+			capName := strings.Title(fName)
+			g.writeIndent()
+			g.builder.WriteString(fmt.Sprintf("%s string `json:%q`\n", capName, fName))
+			scanTargets = append(scanTargets, "&result."+capName)
 		}
+		g.indent--
+		g.writeIndent()
+		g.builder.WriteString("}\n")
 
-		switch ctx.Operation {
-
-		case "SELECT":
-			g.writeIndent()
-			g.builder.WriteString("type returnType struct {\n")
-			g.indent++
-			var scanPointers []string
-			for _, fieldName := range ctx.SelectFields {
-				goType := "string"
-				for _, f := range ctx.Model.Fields {
-					if f.Nom == fieldName && f.Type == "int" {
-						goType = "int"
-					}
-				}
-				capName := capitalize(fieldName)
-				g.writeIndent()
-				g.builder.WriteString(fmt.Sprintf("%s %s `json:%q`\n", capName, goType, fieldName))
-				scanPointers = append(scanPointers, fmt.Sprintf("&returnValue.%s", capName))
-			}
-			g.indent--
-			g.writeIndent()
-			g.builder.WriteString("}\n\n")
-
-			g.writeIndent()
-			g.builder.WriteString("var returnValue returnType\n")
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n",
-				strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereClauseSQL))
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, %s).Scan(%s)\n",
-				strings.Join(whereArgs, ", "), strings.Join(scanPointers, ", ")))
-
-		case "INSERT":
-			var insertFields []string
-			var placeholders []string
-			var insertArgs []string
-
-			idx := 1
-			for fieldName, boundVar := range ctx.BoundInputs {
-				insertFields = append(insertFields, fieldName)
-				placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
-				insertArgs = append(insertArgs, boundVar)
-				idx++
-			}
-
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"INSERT INTO %s (%s) VALUES (%s) RETURNING id\"\n",
-				ctx.Model.Name, strings.Join(insertFields, ", "), strings.Join(placeholders, ", ")))
-			g.writeIndent()
-			g.builder.WriteString("var newID int\n")
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, %s).Scan(&newID)\n", strings.Join(insertArgs, ", ")))
-
-		case "UPDATE":
-			var setClauses []string
-			var updateArgs []string
-
-			idx := 1
-			for fieldName, boundVar := range ctx.BoundInputs {
-				setClauses = append(setClauses, fmt.Sprintf("%s = $%d", fieldName, idx))
-				updateArgs = append(updateArgs, boundVar)
-				idx++
-			}
-			updateArgs = append(updateArgs, whereArgs...)
-
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"UPDATE %s SET %s%s\"\n",
-				ctx.Model.Name, strings.Join(setClauses, ", "), whereClauseSQL))
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("_, err := db.Exec(query, %s)\n", strings.Join(updateArgs, ", ")))
-
-		case "DELETE":
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("query := \"DELETE FROM %s%s\"\n", ctx.Model.Name, whereClauseSQL))
-			g.writeIndent()
-			g.builder.WriteString(fmt.Sprintf("_, err := db.Exec(query, %s)\n", strings.Join(whereArgs, ", ")))
-		}
-
+		g.writeIndent()
+		g.builder.WriteString("var result RowResult\n")
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("query := \"SELECT %s FROM %s%s\"\n",
+			strings.Join(ctx.SelectFields, ", "), ctx.Model.Name, whereSQL))
+		g.writeIndent()
+		g.builder.WriteString(fmt.Sprintf("err := db.QueryRow(query, %s).Scan(%s)\n",
+			strings.Join(args, ", "), strings.Join(scanTargets, ", ")))
 		g.writeIndent()
 		g.builder.WriteString("if err != nil {\n")
 		g.indent++
 		g.writeIndent()
-		g.builder.WriteString("http.Error(w, \"Erreur lors de l'exécution SQL\", http.StatusInternalServerError)\n")
+		g.builder.WriteString("http.Error(w, err.Error(), http.StatusInternalServerError)\n")
 		g.writeIndent()
 		g.builder.WriteString("return\n")
 		g.indent--
 		g.writeIndent()
 		g.builder.WriteString("}\n\n")
-
-	case "responseNode":
-		// Détection du status code lié via statusCodeNode
-		statusCode := ctx.StatusCodeVar
-		for _, e := range g.edges {
-			if e.Target == node.ID && e.TargetHandle == "response_status" {
-				statusCode = "http.StatusOK"
-			}
-		}
-
-		g.writeIndent()
-		g.builder.WriteString(fmt.Sprintf("w.WriteHeader(%s)\n", statusCode))
-		g.writeIndent()
-		g.builder.WriteString("w.Header().Set(\"Content-Type\", \"application/json\")\n")
-
-		if ctx.Operation == "SELECT" {
-			g.writeIndent()
-			g.builder.WriteString("json.NewEncoder(w).Encode(returnValue)\n")
-		} else if ctx.Operation == "INSERT" {
-			g.writeIndent()
-			g.builder.WriteString("json.NewEncoder(w).Encode(map[string]any{\"id\": newID, \"message\": \"Créé avec succès\"})\n")
-		} else {
-			g.writeIndent()
-			g.builder.WriteString("json.NewEncoder(w).Encode(map[string]string{\"message\": \"Opération réussie\"})\n")
-		}
-
-	case "ifElseNode":
-		g.writeIndent()
-		g.builder.WriteString("// Structure Conditionnelle (IF / ELSE)\n")
-
-	case "ifNode":
-		g.writeIndent()
-		g.builder.WriteString("if true { // Condition issue des equalNodes\n")
-		g.indent++
-
-	case "equalNode":
-		g.writeIndent()
-		g.builder.WriteString("// Évaluation de l'égalité\n")
-	}
-
-	for _, child := range node.Children {
-		g.traverseAndGenerate(child, ctx)
-	}
-
-	if node.Type == "ifNode" {
-		g.indent--
-		g.writeIndent()
-		g.builder.WriteString("}\n")
 	}
 }
 
-func capitalize(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-// --- 4. Exécution directe sur les données brutes fournies ---
+// --- Exemple d'exécution ---
 
 func main() {
-	rawEdge := `[{"source":"rootNode_6pdmo","target":"modelNode_9tfo7","targetHandle":"model_handle_target","id":"xy-edge__rootNode_6pdmo-modelNode_9tfo7model_handle_target"},{"id":"e-modelNode_9tfo7-selectNode_um68t","source":"modelNode_9tfo7","target":"selectNode_um68t","style":{"stroke":"#4ecdc4"}},{"id":"e-selectNode_um68t-whereNode_r9a9o","source":"selectNode_um68t","target":"whereNode_r9a9o","style":{"stroke":"#4ecdc4"}},{"id":"e-whereNode_r9a9o-returnNode_ki1vw","source":"whereNode_r9a9o","target":"returnNode_ki1vw","style":{"stroke":"#4ecdc4"}},{"source":"returnNode_ki1vw","target":"responseNode_fkvv7","targetHandle":"connect_from_parent","id":"xy-edge__returnNode_ki1vw-responseNode_fkvv7connect_from_parent"},{"source":"response_7awgp","sourceHandle":"status_code","target":"responseNode_fkvv7","targetHandle":"response_status","id":"xy-edge__response_7awgpstatus_code-responseNode_fkvv7response_status"},{"source":"rootNode_6pdmo","target":"var_tnt1t","targetHandle":"var_var_tnt1t","id":"xy-edge__rootNode_6pdmo-var_tnt1tvar_var_tnt1t"},{"source":"var_tnt1t","target":"whereNode_r9a9o","targetHandle":"voiture_where_idtarget","id":"xy-edge__var_tnt1t-whereNode_r9a9ovoiture_where_idtarget"}]`
+	rawEdges := `[
+		{"id":"e1","source":"rootNode_1","target":"var_1"},
+		{"id":"e2","source":"rootNode_1","target":"modelNode_1"},
+		{"id":"e3","source":"modelNode_1","target":"selectNode_1"},
+		{"id":"e4","source":"selectNode_1","target":"whereNode_1"},
+		{"id":"e5","source":"whereNode_1","target":"returnNode_1"},
+		{"id":"e6","source":"returnNode_1","target":"responseNode_1"},
+		{"id":"e_data","source":"var_1","target":"whereNode_1","targetHandle":"voiture_where_idtarget"}
+	]`
 
-	rawNode := `[{"id":"rootNode_6pdmo","type":"rootNode","data":{"name":"rootNode"}},{"id":"var_tnt1t","type":"varNode","data":{"name":"userId","params":"","type":"int","default value":"1"}},{"id":"modelNode_9tfo7","type":"modelNode","data":{"name":"voiture","model":{"nom":"voiture","champs":[{"nom":"id","type":"int","default_value":"autoincrement"},{"nom":"mark","type":"string","default_value":""},{"nom":"number","type":"string","default_value":""}]}}},{"id":"selectNode_um68t","type":"selectNode","data":{"name":"selectNode","id":true,"mark":true,"number":true}},{"id":"whereNode_r9a9o","type":"whereNode","data":{"name":"whereNode"}},{"id":"returnNode_ki1vw","type":"returnNode","data":{"name":"returnNode"}},{"id":"responseNode_fkvv7","type":"responseNode","data":{}}]`
+	rawNodes := `[
+		{"id":"rootNode_1","type":"rootNode","data":{"name":"rootNode"}},
+		{"id":"var_1","type":"varNode","data":{"name":"userId","type":"int","default value":"1"}},
+		{"id":"modelNode_1","type":"modelNode","data":{"model":{"nom":"voiture","champs":[{"nom":"id","type":"int"},{"nom":"mark","type":"string"},{"nom":"number","type":"string"}]}}},
+		{"id":"selectNode_1","type":"selectNode","data":{"mark":true,"number":true}},
+		{"id":"whereNode_1","type":"whereNode","data":{}},
+		{"id":"returnNode_1","type":"returnNode","data":{}},
+		{"id":"responseNode_1","type":"responseNode","data":{}}
+	]`
 
-	roots, edges, nodeMap, err := ParseTurboStackGraph(rawNode, rawEdge)
+	roots, edges, nodeMap, err := ParseGraph(rawNodes, rawEdges)
 	if err != nil {
 		log.Fatalf("Erreur: %v", err)
 	}
 
-	gen := &TurboStackGenerator{}
-	code := gen.GenerateRoute("GET /voitures/{id}", roots, edges, nodeMap)
-
+	gen := &CodeGenerator{}
+	code := gen.GenerateHandler("GET /voitures/{id}", roots, edges, nodeMap)
 	fmt.Println(code)
 }
