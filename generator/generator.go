@@ -1,7 +1,6 @@
 package generator
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -66,20 +65,20 @@ func NewCodeGenerator(graph LogicGraph) *CodeGenerator {
 }
 
 // GenerateController traduit le graphe en handler Go (Fiber / Gin / net/http)
-func (cg *CodeGenerator) GenerateController(handlerName string) string {
-	cg.sb.WriteString(fmt.Sprintf("func %s(c *fiber.Ctx) error {\n", handlerName))
+// func (cg *CodeGenerator) GenerateController(handlerName string) string {
+// 	cg.sb.WriteString(fmt.Sprintf("func %s(c *fiber.Ctx) error {\n", handlerName))
 
-	// Recherche du nœud d'entrée principal (ex: RequestParams, BodyParams ou premier nœud d'action)
-	startNode := cg.findStartNode()
-	if startNode != nil {
-		cg.traverseNode(startNode.ID)
-	}
+// 	// Recherche du nœud d'entrée principal (ex: RequestParams, BodyParams ou premier nœud d'action)
+// 	startNode := cg.findStartNode()
+// 	if startNode != nil {
+// 		cg.traverseNode(startNode.ID)
+// 	}
 
-	cg.sb.WriteString("\treturn c.SendStatus(fiber.StatusOK)\n")
-	cg.sb.WriteString("}\n")
+// 	cg.sb.WriteString("\treturn c.SendStatus(fiber.StatusOK)\n")
+// 	cg.sb.WriteString("}\n")
 
-	return cg.sb.String()
-}
+// 	return cg.sb.String()
+// }
 
 func (cg *CodeGenerator) findStartNode() *Node {
 	// Un nœud de départ n'a pas de cible d'edge entrante
@@ -131,3 +130,4 @@ func (cg *CodeGenerator) traverseNode(nodeID string) {
 		}
 	}
 }
+

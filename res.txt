@@ -1,16 +1,17 @@
 // --- CODE GÉNERÉ (SCÉNARIO COMPLEXE) ---
-func RegisterUserHandler(c *fiber.Ctx) error {
+func RegisterUserHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"` 
 		Age string `json:"age"` 
 		Email string `json:"email"` 
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
 	}
+	age := body.Age
 	email := body.Email
 	username := body.Username
-	age := body.Age
 	var defaultRole string = "user"
 	user := models.User{
 		Email: "",
@@ -25,11 +26,13 @@ func RegisterUserHandler(c *fiber.Ctx) error {
 	if err := query.Updates(updates).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	c.Status(201)
-	return c.JSON(fiber.Map{
+	w.WriteHeader(201)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"email": email,
 		"username": username,
 	})
+	return
 	user := models.User{
 		Email: "",
 		Username: "",
@@ -43,11 +46,13 @@ func RegisterUserHandler(c *fiber.Ctx) error {
 	if err := query.Updates(updates).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	c.Status(201)
-	return c.JSON(fiber.Map{
+	w.WriteHeader(201)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"email": email,
 		"username": username,
 	})
+	return
 	user := models.User{
 		Email: "",
 		Username: "",
@@ -61,11 +66,13 @@ func RegisterUserHandler(c *fiber.Ctx) error {
 	if err := query.Updates(updates).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	c.Status(201)
-	return c.JSON(fiber.Map{
+	w.WriteHeader(201)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"email": email,
 		"username": username,
 	})
+	return
 	user := models.User{
 		Email: "",
 		Username: "",
@@ -79,11 +86,13 @@ func RegisterUserHandler(c *fiber.Ctx) error {
 	if err := query.Updates(updates).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	c.Status(201)
-	return c.JSON(fiber.Map{
+	w.WriteHeader(201)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"email": email,
 		"username": username,
 	})
-	return c.SendStatus(fiber.StatusOK)
+	return
+	w.WriteHeader(http.StatusOK)
 }
 
